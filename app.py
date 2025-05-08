@@ -496,340 +496,449 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
                 relay_settings_fig)
 
     try:
-        # Preparar datos para el análisis
-        df = pd.DataFrame({
-            'delta_t': [pair.get('delta_t', 0) for pair in all_pairs],
-            'main_tds': [pair.get('main_relay', {}).get('TDS', 0) for pair in all_pairs],
-            'backup_tds': [pair.get('backup_relay', {}).get('TDS', 0) for pair in all_pairs],
-            'main_pickup': [pair.get('main_relay', {}).get('pick_up', 0) for pair in all_pairs],
-            'backup_pickup': [pair.get('backup_relay', {}).get('pick_up', 0) for pair in all_pairs],
-            'main_ishc': [pair.get('main_relay', {}).get('Ishc', 0) for pair in all_pairs],
-            'backup_ishc': [pair.get('backup_relay', {}).get('Ishc', 0) for pair in all_pairs],
-            'main_time': [pair.get('main_relay', {}).get('Time_out', 0) for pair in all_pairs],
-            'backup_time': [pair.get('backup_relay', {}).get('Time_out', 0) for pair in all_pairs]
-        })
+        # Procesar par coordinado seleccionado
+        if coordinated_idx is not None and coordinated_idx < len(coordinated_pairs):
+            pair = coordinated_pairs[coordinated_idx]
+            main_relay = pair.get('main_relay', {})
+            backup_relay = pair.get('backup_relay', {})
+            
+            # Crear rango de corrientes para las curvas
+            main_pickup = main_relay.get('pick_up', 0)
+            backup_pickup = backup_relay.get('pick_up', 0)
+            min_pickup = min(main_pickup, backup_pickup)
+            max_ishc = max(main_relay.get('Ishc', 0), backup_relay.get('Ishc', 0))
+            i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER),
+                                np.log10(max_ishc * MAX_CURRENT_MULTIPLIER),
+                                num=100)
+            
+            # Calcular curvas
+            main_times = calculate_inverse_time_curve(main_relay.get('TDS', 0),
+                                                    main_pickup, i_range)
+            backup_times = calculate_inverse_time_curve(backup_relay.get('TDS', 0),
+                                                      backup_pickup, i_range)
+            
+            # Crear gráfica
+            coordinated_fig = go.Figure()
+            
+            # Agregar curvas
+            coordinated_fig.add_trace(
+                go.Scatter(x=main_times, y=i_range, name='Main',
+                          mode='lines', line=dict(color='#3498db'),
+                          hovertemplate='t: %{x:.3f}s<br>I: %{y:.1f}A')
+            )
+            coordinated_fig.add_trace(
+                go.Scatter(x=backup_times, y=i_range, name='Backup',
+                          mode='lines', line=dict(color='#e74c3c'),
+                          hovertemplate='t: %{x:.3f}s<br>I: %{y:.1f}A')
+            )
+            
+            # Agregar puntos de operación
+            coordinated_fig.add_trace(
+                go.Scatter(x=[main_relay.get('Time_out', 0)],
+                          y=[main_relay.get('Ishc', 0)],
+                          name='Main Op. Point', mode='markers',
+                          marker=dict(size=12, color='#3498db', symbol='star'),
+                          hovertemplate='t_m: %{x:.3f}s<br>I_m: %{y:.1f}A')
+            )
+            coordinated_fig.add_trace(
+                go.Scatter(x=[backup_relay.get('Time_out', 0)],
+                          y=[backup_relay.get('Ishc', 0)],
+                          name='Backup Op. Point', mode='markers',
+                          marker=dict(size=12, color='#e74c3c', symbol='star'),
+                          hovertemplate='t_b: %{x:.3f}s<br>I_b: %{y:.1f}A')
+            )
+            
+            # Agregar línea horizontal para delta_t
+            coordinated_fig.add_trace(
+                go.Scatter(x=[main_relay.get('Time_out', 0),
+                             backup_relay.get('Time_out', 0)],
+                          y=[main_relay.get('Ishc', 0),
+                             main_relay.get('Ishc', 0)],
+                          name='Δt', mode='lines',
+                          line=dict(color='#2ecc71', width=2, dash='dash'),
+                          hovertemplate='Δt: %{text}',
+                          text=[f'Δt = {pair.get("delta_t", 0):.3f}s'])
+            )
+            
+            # Actualizar layout
+            coordinated_fig.update_layout(
+                title=f'Par Coordinado (Δt = {pair.get("delta_t", 0):.3f}s)',
+                xaxis_title='Tiempo de operación (s)',
+                yaxis_title='Corriente (A)',
+                xaxis_type='log',
+                yaxis_type='log',
+                showlegend=True,
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                xaxis=dict(
+                    gridcolor='lightgray',
+                    showgrid=True,
+                    zeroline=True,
+                    zerolinecolor='black',
+                    zerolinewidth=1
+                ),
+                yaxis=dict(
+                    gridcolor='lightgray',
+                    showgrid=True,
+                    zeroline=True,
+                    zerolinecolor='black',
+                    zerolinewidth=1
+                )
+            )
+            
+            # Actualizar tabla de datos
+            coordinated_table_data = [
+                {"parameter": "Falla (%)", "value": pair.get('fault', 'N/A')},
+                {"parameter": "Línea Principal", "value": main_relay.get('line', 'N/A')},
+                {"parameter": "Relé Principal", "value": main_relay.get('relay', 'N/A')},
+                {"parameter": "TDS (Main)", "value": f"{main_relay.get('TDS', 0):.5f}"},
+                {"parameter": "Pickup (Main)", "value": f"{main_relay.get('pick_up', 0):.5f}"},
+                {"parameter": "I_shc (Main)", "value": f"{main_relay.get('Ishc', 0):.3f}"},
+                {"parameter": "t_m (Main)", "value": f"{main_relay.get('Time_out', 0):.3f}"},
+                {"parameter": "Línea Backup", "value": backup_relay.get('line', 'N/A')},
+                {"parameter": "Relé Backup", "value": backup_relay.get('relay', 'N/A')},
+                {"parameter": "TDS (Backup)", "value": f"{backup_relay.get('TDS', 0):.5f}"},
+                {"parameter": "Pickup (Backup)", "value": f"{backup_relay.get('pick_up', 0):.5f}"},
+                {"parameter": "I_shc (Backup)", "value": f"{backup_relay.get('Ishc', 0):.3f}"},
+                {"parameter": "t_b (Backup)", "value": f"{backup_relay.get('Time_out', 0):.3f}"},
+                {"parameter": "Δt", "value": f"{pair.get('delta_t', 0):.3f}"},
+                {"parameter": "MT", "value": f"{pair.get('mt', 0):.3f}"}
+            ]
 
-        # 1. Análisis de Coordinación
-        coordination_fig = make_subplots(rows=2, cols=2,
-                                       subplot_titles=("Distribución de Δt", "Relación Δt vs I_shc",
-                                                      "Distribución de Tiempos", "Relación TDS vs Pickup"))
-        
-        # Distribución de Δt
-        coordination_fig.add_trace(
-            go.Histogram(x=df['delta_t'], name="Δt", marker_color='#2c3e50'),
-            row=1, col=1
+        # Procesar par descoordinado seleccionado
+        if uncoordinated_idx is not None and uncoordinated_idx < len(uncoordinated_pairs):
+            pair = uncoordinated_pairs[uncoordinated_idx]
+            main_relay = pair.get('main_relay', {})
+            backup_relay = pair.get('backup_relay', {})
+            
+            # Crear rango de corrientes para las curvas
+            main_pickup = main_relay.get('pick_up', 0)
+            backup_pickup = backup_relay.get('pick_up', 0)
+            min_pickup = min(main_pickup, backup_pickup)
+            max_ishc = max(main_relay.get('Ishc', 0), backup_relay.get('Ishc', 0))
+            i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER),
+                                np.log10(max_ishc * MAX_CURRENT_MULTIPLIER),
+                                num=100)
+            
+            # Calcular curvas
+            main_times = calculate_inverse_time_curve(main_relay.get('TDS', 0),
+                                                    main_pickup, i_range)
+            backup_times = calculate_inverse_time_curve(backup_relay.get('TDS', 0),
+                                                      backup_pickup, i_range)
+            
+            # Crear gráfica
+            uncoordinated_fig = go.Figure()
+            
+            # Agregar curvas
+            uncoordinated_fig.add_trace(
+                go.Scatter(x=main_times, y=i_range, name='Main',
+                          mode='lines', line=dict(color='#3498db'),
+                          hovertemplate='t: %{x:.3f}s<br>I: %{y:.1f}A')
+            )
+            uncoordinated_fig.add_trace(
+                go.Scatter(x=backup_times, y=i_range, name='Backup',
+                          mode='lines', line=dict(color='#e74c3c'),
+                          hovertemplate='t: %{x:.3f}s<br>I: %{y:.1f}A')
+            )
+            
+            # Agregar puntos de operación
+            uncoordinated_fig.add_trace(
+                go.Scatter(x=[main_relay.get('Time_out', 0)],
+                          y=[main_relay.get('Ishc', 0)],
+                          name='Main Op. Point', mode='markers',
+                          marker=dict(size=12, color='#3498db', symbol='star'),
+                          hovertemplate='t_m: %{x:.3f}s<br>I_m: %{y:.1f}A')
+            )
+            uncoordinated_fig.add_trace(
+                go.Scatter(x=[backup_relay.get('Time_out', 0)],
+                          y=[backup_relay.get('Ishc', 0)],
+                          name='Backup Op. Point', mode='markers',
+                          marker=dict(size=12, color='#e74c3c', symbol='star'),
+                          hovertemplate='t_b: %{x:.3f}s<br>I_b: %{y:.1f}A')
+            )
+            
+            # Agregar línea horizontal para delta_t
+            uncoordinated_fig.add_trace(
+                go.Scatter(x=[main_relay.get('Time_out', 0),
+                             backup_relay.get('Time_out', 0)],
+                          y=[main_relay.get('Ishc', 0),
+                             main_relay.get('Ishc', 0)],
+                          name='Δt', mode='lines',
+                          line=dict(color='#e74c3c', width=2, dash='dash'),
+                          hovertemplate='Δt: %{text}',
+                          text=[f'Δt = {pair.get("delta_t", 0):.3f}s'])
+            )
+            
+            # Actualizar layout
+            uncoordinated_fig.update_layout(
+                title=f'Par Descoordinado (Δt = {pair.get("delta_t", 0):.3f}s)',
+                xaxis_title='Tiempo de operación (s)',
+                yaxis_title='Corriente (A)',
+                xaxis_type='log',
+                yaxis_type='log',
+                showlegend=True,
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                xaxis=dict(
+                    gridcolor='lightgray',
+                    showgrid=True,
+                    zeroline=True,
+                    zerolinecolor='black',
+                    zerolinewidth=1
+                ),
+                yaxis=dict(
+                    gridcolor='lightgray',
+                    showgrid=True,
+                    zeroline=True,
+                    zerolinecolor='black',
+                    zerolinewidth=1
+                )
+            )
+            
+            # Actualizar tabla de datos
+            uncoordinated_table_data = [
+                {"parameter": "Falla (%)", "value": pair.get('fault', 'N/A')},
+                {"parameter": "Línea Principal", "value": main_relay.get('line', 'N/A')},
+                {"parameter": "Relé Principal", "value": main_relay.get('relay', 'N/A')},
+                {"parameter": "TDS (Main)", "value": f"{main_relay.get('TDS', 0):.5f}"},
+                {"parameter": "Pickup (Main)", "value": f"{main_relay.get('pick_up', 0):.5f}"},
+                {"parameter": "I_shc (Main)", "value": f"{main_relay.get('Ishc', 0):.3f}"},
+                {"parameter": "t_m (Main)", "value": f"{main_relay.get('Time_out', 0):.3f}"},
+                {"parameter": "Línea Backup", "value": backup_relay.get('line', 'N/A')},
+                {"parameter": "Relé Backup", "value": backup_relay.get('relay', 'N/A')},
+                {"parameter": "TDS (Backup)", "value": f"{backup_relay.get('TDS', 0):.5f}"},
+                {"parameter": "Pickup (Backup)", "value": f"{backup_relay.get('pick_up', 0):.5f}"},
+                {"parameter": "I_shc (Backup)", "value": f"{backup_relay.get('Ishc', 0):.3f}"},
+                {"parameter": "t_b (Backup)", "value": f"{backup_relay.get('Time_out', 0):.3f}"},
+                {"parameter": "Δt", "value": f"{pair.get('delta_t', 0):.3f}"},
+                {"parameter": "MT", "value": f"{pair.get('mt', 0):.3f}"}
+            ]
+
+            # Actualizar gráfica de MT
+            mt_values = [abs(pair.get('mt', 0)) for pair in uncoordinated_pairs]
+            mt_fig = go.Figure(data=[
+                go.Bar(x=list(range(len(mt_values))), y=mt_values,
+                      marker_color='#e74c3c',
+                      hovertemplate='|mt|: %{y:.3f}s')
+            ])
+            mt_fig.update_layout(
+                title='Magnitud de Penalización |mt| (Descoordinados)',
+                xaxis_title='Índice del Par',
+                yaxis_title='|mt| (s)',
+                showlegend=False,
+                plot_bgcolor='white',
+                paper_bgcolor='white',
+                xaxis=dict(
+                    gridcolor='lightgray',
+                    showgrid=True,
+                    zeroline=True,
+                    zerolinecolor='black',
+                    zerolinewidth=1
+                ),
+                yaxis=dict(
+                    gridcolor='lightgray',
+                    showgrid=True,
+                    zeroline=True,
+                    zerolinecolor='black',
+                    zerolinewidth=1
+                )
+            )
+
+        # Generar gráficas de analítica automáticamente
+        # 1. Gráfica de Análisis de Coordinación
+        coordination_fig = go.Figure()
+        delta_t_values = [p.get('delta_t', 0) for p in all_pairs]
+        coordination_fig.add_trace(go.Histogram(
+            x=delta_t_values,
+            name='Distribución Δt',
+            marker_color='#3498db',
+            nbinsx=30
+        ))
+        coordination_fig.update_layout(
+            title='Distribución de Tiempos de Coordinación (Δt)',
+            xaxis_title='Δt (segundos)',
+            yaxis_title='Frecuencia',
+            showlegend=False,
+            plot_bgcolor='white',
+            paper_bgcolor='white'
         )
-        
-        # Relación Δt vs I_shc
-        coordination_fig.add_trace(
-            go.Scatter(x=df['main_ishc'], y=df['delta_t'], mode='markers',
-                      marker=dict(color=['#27ae60' if dt >= 0 else '#e74c3c' for dt in df['delta_t']]),
-                      name="Δt vs I_shc"),
-            row=1, col=2
-        )
-        
-        # Distribución de Tiempos
-        coordination_fig.add_trace(
-            go.Box(y=df['main_time'], name="t_m", marker_color='#3498db'),
-            row=2, col=1
-        )
-        coordination_fig.add_trace(
-            go.Box(y=df['backup_time'], name="t_b", marker_color='#e74c3c'),
-            row=2, col=1
-        )
-        
-        # Relación TDS vs Pickup
-        coordination_fig.add_trace(
-            go.Scatter(x=df['main_tds'], y=df['main_pickup'], mode='markers',
-                      marker=dict(color=['#27ae60' if dt >= 0 else '#e74c3c' for dt in df['delta_t']]),
-                      name="TDS vs Pickup"),
-            row=2, col=2
-        )
-        
-        coordination_fig.update_layout(height=800, showlegend=False)
 
         # 2. Matriz de Correlación
-        corr_matrix = df.corr()
+        correlation_data = pd.DataFrame([
+            {
+                'TDS_Main': p.get('main_relay', {}).get('TDS', 0),
+                'Pickup_Main': p.get('main_relay', {}).get('pick_up', 0),
+                'Ishc_Main': p.get('main_relay', {}).get('Ishc', 0),
+                'TDS_Backup': p.get('backup_relay', {}).get('TDS', 0),
+                'Pickup_Backup': p.get('backup_relay', {}).get('pick_up', 0),
+                'Ishc_Backup': p.get('backup_relay', {}).get('Ishc', 0),
+                'Delta_t': p.get('delta_t', 0)
+            } for p in all_pairs
+        ])
+        corr_matrix = correlation_data.corr()
         correlation_fig = go.Figure(data=go.Heatmap(
             z=corr_matrix.values,
             x=corr_matrix.columns,
             y=corr_matrix.columns,
             colorscale='RdBu',
-            zmin=-1, zmax=1
+            zmin=-1,
+            zmax=1
         ))
         correlation_fig.update_layout(
-            title="Matriz de Correlación",
-            height=600
+            title='Matriz de Correlación',
+            plot_bgcolor='white',
+            paper_bgcolor='white'
         )
 
         # 3. Análisis de Sensibilidad
-        sensitivity_fig = make_subplots(rows=1, cols=2,
-                                      subplot_titles=("Sensibilidad a TDS", "Sensibilidad a Pickup"))
-        
-        # Sensibilidad a TDS
-        tds_ratio = df['backup_tds'] / df['main_tds'].replace(0, np.nan)
-        sensitivity_fig.add_trace(
-            go.Scatter(x=tds_ratio, y=df['delta_t'],
-                      mode='markers',
-                      marker=dict(color=['#27ae60' if dt >= 0 else '#e74c3c' for dt in df['delta_t']]),
-                      name="TDS Ratio"),
-            row=1, col=1
+        sensitivity_fig = go.Figure()
+        # TDS vs Delta_t
+        sensitivity_fig.add_trace(go.Scatter(
+            x=[p.get('main_relay', {}).get('TDS', 0) for p in all_pairs],
+            y=[p.get('delta_t', 0) for p in all_pairs],
+            mode='markers',
+            name='TDS Main vs Δt',
+            marker=dict(color='#3498db')
+        ))
+        sensitivity_fig.add_trace(go.Scatter(
+            x=[p.get('backup_relay', {}).get('TDS', 0) for p in all_pairs],
+            y=[p.get('delta_t', 0) for p in all_pairs],
+            mode='markers',
+            name='TDS Backup vs Δt',
+            marker=dict(color='#e74c3c')
+        ))
+        sensitivity_fig.update_layout(
+            title='Sensibilidad: TDS vs Δt',
+            xaxis_title='TDS',
+            yaxis_title='Δt (segundos)',
+            plot_bgcolor='white',
+            paper_bgcolor='white'
         )
-        
-        # Sensibilidad a Pickup
-        pickup_ratio = df['backup_pickup'] / df['main_pickup'].replace(0, np.nan)
-        sensitivity_fig.add_trace(
-            go.Scatter(x=pickup_ratio, y=df['delta_t'],
-                      mode='markers',
-                      marker=dict(color=['#27ae60' if dt >= 0 else '#e74c3c' for dt in df['delta_t']]),
-                      name="Pickup Ratio"),
-            row=1, col=2
-        )
-        
-        sensitivity_fig.update_layout(height=500, showlegend=False)
 
         # 4. Análisis por Línea
         line_data = {}
         for pair in all_pairs:
             main_line = pair.get('main_relay', {}).get('line', 'N/A')
             backup_line = pair.get('backup_relay', {}).get('line', 'N/A')
-            status = "Coordinado" if pair.get('delta_t', 0) >= 0 else "Descoordinado"
-            
             if main_line not in line_data:
-                line_data[main_line] = {'coordinated': 0, 'uncoordinated': 0, 'tmt': 0}
+                line_data[main_line] = {'coordinated': 0, 'uncoordinated': 0}
             if backup_line not in line_data:
-                line_data[backup_line] = {'coordinated': 0, 'uncoordinated': 0, 'tmt': 0}
-                
-            if status == "Coordinado":
+                line_data[backup_line] = {'coordinated': 0, 'uncoordinated': 0}
+            
+            if pair.get('delta_t', 0) >= 0:
                 line_data[main_line]['coordinated'] += 1
                 line_data[backup_line]['coordinated'] += 1
             else:
                 line_data[main_line]['uncoordinated'] += 1
                 line_data[backup_line]['uncoordinated'] += 1
-                line_data[main_line]['tmt'] += abs(pair.get('mt', 0))
-                line_data[backup_line]['tmt'] += abs(pair.get('mt', 0))
 
-        lines = list(line_data.keys())
-        coordinated = [line_data[line]['coordinated'] for line in lines]
-        uncoordinated = [line_data[line]['uncoordinated'] for line in lines]
-        tmt = [line_data[line]['tmt'] for line in lines]
-
-        line_fig = make_subplots(rows=1, cols=2,
-                                subplot_titles=("Coordinación por Línea", "TMT por Línea"))
-        
-        line_fig.add_trace(
-            go.Bar(x=lines, y=coordinated, name='Coordinados', marker_color='#27ae60'),
-            row=1, col=1
+        line_fig = go.Figure(data=[
+            go.Bar(name='Coordinados', x=list(line_data.keys()),
+                  y=[d['coordinated'] for d in line_data.values()],
+                  marker_color='#2ecc71'),
+            go.Bar(name='Descoordinados', x=list(line_data.keys()),
+                  y=[d['uncoordinated'] for d in line_data.values()],
+                  marker_color='#e74c3c')
+        ])
+        line_fig.update_layout(
+            title='Análisis de Coordinación por Línea',
+            xaxis_title='Línea',
+            yaxis_title='Número de Pares',
+            barmode='stack',
+            plot_bgcolor='white',
+            paper_bgcolor='white'
         )
-        line_fig.add_trace(
-            go.Bar(x=lines, y=uncoordinated, name='Descoordinados', marker_color='#e74c3c'),
-            row=1, col=1
-        )
-        
-        line_fig.add_trace(
-            go.Bar(x=lines, y=tmt, name='TMT', marker_color='#e67e22'),
-            row=1, col=2
-        )
-        
-        line_fig.update_layout(height=500, barmode='stack', showlegend=True)
 
         # 5. Análisis por Relé
         relay_data = {}
         for pair in all_pairs:
             main_relay = pair.get('main_relay', {}).get('relay', 'N/A')
             backup_relay = pair.get('backup_relay', {}).get('relay', 'N/A')
-            status = "Coordinado" if pair.get('delta_t', 0) >= 0 else "Descoordinado"
-            
             if main_relay not in relay_data:
-                relay_data[main_relay] = {'coordinated': 0, 'uncoordinated': 0, 'tmt': 0}
+                relay_data[main_relay] = {'coordinated': 0, 'uncoordinated': 0}
             if backup_relay not in relay_data:
-                relay_data[backup_relay] = {'coordinated': 0, 'uncoordinated': 0, 'tmt': 0}
-                
-            if status == "Coordinado":
+                relay_data[backup_relay] = {'coordinated': 0, 'uncoordinated': 0}
+            
+            if pair.get('delta_t', 0) >= 0:
                 relay_data[main_relay]['coordinated'] += 1
                 relay_data[backup_relay]['coordinated'] += 1
             else:
                 relay_data[main_relay]['uncoordinated'] += 1
                 relay_data[backup_relay]['uncoordinated'] += 1
-                relay_data[main_relay]['tmt'] += abs(pair.get('mt', 0))
-                relay_data[backup_relay]['tmt'] += abs(pair.get('mt', 0))
 
-        relays = list(relay_data.keys())
-        relay_coordinated = [relay_data[relay]['coordinated'] for relay in relays]
-        relay_uncoordinated = [relay_data[relay]['uncoordinated'] for relay in relays]
-        relay_tmt = [relay_data[relay]['tmt'] for relay in relays]
-
-        relay_fig = make_subplots(rows=1, cols=2,
-                                 subplot_titles=("Coordinación por Relé", "TMT por Relé"))
-        
-        relay_fig.add_trace(
-            go.Bar(x=relays, y=relay_coordinated, name='Coordinados', marker_color='#27ae60'),
-            row=1, col=1
+        relay_fig = go.Figure(data=[
+            go.Bar(name='Coordinados', x=list(relay_data.keys()),
+                  y=[d['coordinated'] for d in relay_data.values()],
+                  marker_color='#2ecc71'),
+            go.Bar(name='Descoordinados', x=list(relay_data.keys()),
+                  y=[d['uncoordinated'] for d in relay_data.values()],
+                  marker_color='#e74c3c')
+        ])
+        relay_fig.update_layout(
+            title='Análisis de Coordinación por Relé',
+            xaxis_title='Relé',
+            yaxis_title='Número de Pares',
+            barmode='stack',
+            plot_bgcolor='white',
+            paper_bgcolor='white'
         )
-        relay_fig.add_trace(
-            go.Bar(x=relays, y=relay_uncoordinated, name='Descoordinados', marker_color='#e74c3c'),
-            row=1, col=1
-        )
-        
-        relay_fig.add_trace(
-            go.Bar(x=relays, y=relay_tmt, name='TMT', marker_color='#e67e22'),
-            row=1, col=2
-        )
-        
-        relay_fig.update_layout(height=500, barmode='stack', showlegend=True)
 
         # 6. Análisis de Fallas
         fault_data = {}
         for pair in all_pairs:
             fault = pair.get('fault', 'N/A')
-            status = "Coordinado" if pair.get('delta_t', 0) >= 0 else "Descoordinado"
-            
             if fault not in fault_data:
-                fault_data[fault] = {'coordinated': 0, 'uncoordinated': 0, 'tmt': 0}
-                
-            if status == "Coordinado":
+                fault_data[fault] = {'coordinated': 0, 'uncoordinated': 0}
+            
+            if pair.get('delta_t', 0) >= 0:
                 fault_data[fault]['coordinated'] += 1
             else:
                 fault_data[fault]['uncoordinated'] += 1
-                fault_data[fault]['tmt'] += abs(pair.get('mt', 0))
 
-        faults = list(fault_data.keys())
-        fault_coordinated = [fault_data[fault]['coordinated'] for fault in faults]
-        fault_uncoordinated = [fault_data[fault]['uncoordinated'] for fault in faults]
-        fault_tmt = [fault_data[fault]['tmt'] for fault in faults]
-
-        fault_fig = make_subplots(rows=1, cols=2,
-                                 subplot_titles=("Coordinación por Falla", "TMT por Falla"))
-        
-        fault_fig.add_trace(
-            go.Bar(x=faults, y=fault_coordinated, name='Coordinados', marker_color='#27ae60'),
-            row=1, col=1
-        )
-        fault_fig.add_trace(
-            go.Bar(x=faults, y=fault_uncoordinated, name='Descoordinados', marker_color='#e74c3c'),
-            row=1, col=1
-        )
-        
-        fault_fig.add_trace(
-            go.Bar(x=faults, y=fault_tmt, name='TMT', marker_color='#e67e22'),
-            row=1, col=2
-        )
-        
-        fault_fig.update_layout(height=500, barmode='stack', showlegend=True)
-
-        # 7. Distribución de TDS y Pickup por Relé
-        relay_settings_fig = make_subplots(rows=2, cols=1,
-                                         subplot_titles=("Distribución de TDS por Relé", "Distribución de Pickup por Relé"),
-                                         vertical_spacing=0.15)
-
-        # Preparar datos para TDS y Pickup
-        relay_tds_data = {}
-        relay_pickup_data = {}
-
-        for pair in all_pairs:
-            main_relay = pair.get('main_relay', {})
-            backup_relay = pair.get('backup_relay', {})
-            
-            # TDS
-            main_relay_name = main_relay.get('relay', 'N/A')
-            backup_relay_name = backup_relay.get('relay', 'N/A')
-            main_tds = main_relay.get('TDS', 0)
-            backup_tds = backup_relay.get('TDS', 0)
-            
-            if main_relay_name not in relay_tds_data:
-                relay_tds_data[main_relay_name] = {'main': [], 'backup': []}
-            if backup_relay_name not in relay_tds_data:
-                relay_tds_data[backup_relay_name] = {'main': [], 'backup': []}
-            
-            relay_tds_data[main_relay_name]['main'].append(main_tds)
-            relay_tds_data[backup_relay_name]['backup'].append(backup_tds)
-            
-            # Pickup
-            main_pickup = main_relay.get('pick_up', 0)
-            backup_pickup = backup_relay.get('pick_up', 0)
-            
-            if main_relay_name not in relay_pickup_data:
-                relay_pickup_data[main_relay_name] = {'main': [], 'backup': []}
-            if backup_relay_name not in relay_pickup_data:
-                relay_pickup_data[backup_relay_name] = {'main': [], 'backup': []}
-            
-            relay_pickup_data[main_relay_name]['main'].append(main_pickup)
-            relay_pickup_data[backup_relay_name]['backup'].append(backup_pickup)
-
-        # Crear box plots para TDS
-        relay_names = sorted(list(relay_tds_data.keys()))
-        main_tds_values = [relay_tds_data[relay]['main'] for relay in relay_names]
-        backup_tds_values = [relay_tds_data[relay]['backup'] for relay in relay_names]
-
-        relay_settings_fig.add_trace(
-            go.Box(y=main_tds_values, name='TDS Main', marker_color='#3498db', boxpoints='all'),
-            row=1, col=1
-        )
-        relay_settings_fig.add_trace(
-            go.Box(y=backup_tds_values, name='TDS Backup', marker_color='#e74c3c', boxpoints='all'),
-            row=1, col=1
-        )
-
-        # Crear box plots para Pickup
-        main_pickup_values = [relay_pickup_data[relay]['main'] for relay in relay_names]
-        backup_pickup_values = [relay_pickup_data[relay]['backup'] for relay in relay_names]
-
-        relay_settings_fig.add_trace(
-            go.Box(y=main_pickup_values, name='Pickup Main', marker_color='#2ecc71', boxpoints='all'),
-            row=2, col=1
-        )
-        relay_settings_fig.add_trace(
-            go.Box(y=backup_pickup_values, name='Pickup Backup', marker_color='#f1c40f', boxpoints='all'),
-            row=2, col=1
-        )
-
-        relay_settings_fig.update_layout(
-            height=800,
-            showlegend=True,
-            xaxis=dict(tickangle=45),
-            xaxis2=dict(tickangle=45),
-            yaxis_title="TDS",
-            yaxis2_title="Pickup (A)",
-            margin=dict(b=100)
-        )
-
-        # 8. Conclusiones y Recomendaciones
-        conclusions = html.Div([
-            html.H5("Análisis de Coordinación"),
-            html.P([
-                f"• Total de pares analizados: {len(all_pairs)}",
-                html.Br(),
-                f"• Tasa de coordinación: {len(coordinated_pairs)/len(all_pairs)*100:.1f}%",
-                html.Br(),
-                f"• TMT total: {tmt_total_scenario:.3f}s",
-                html.Br(),
-                f"• TMT promedio por par descoordinado: {tmt_total_scenario/len(uncoordinated_pairs):.3f}s"
-            ]),
-            html.H5("Patrones Identificados"),
-            html.P([
-                "• Relación entre TDS y coordinación: ",
-                "Se observa una correlación significativa entre la relación TDS backup/main y la coordinación.",
-                html.Br(),
-                "• Impacto de las corrientes de falla: ",
-                "Las fallas con mayor magnitud tienden a mostrar mejor coordinación.",
-                html.Br(),
-                "• Sensibilidad a parámetros: ",
-                "El sistema es más sensible a variaciones en el TDS que en el pickup."
-            ]),
-            html.H5("Recomendaciones"),
-            html.P([
-                "• Ajuste de TDS: ",
-                "Considerar incrementar el TDS de los relés de respaldo en los pares descoordinados.",
-                html.Br(),
-                "• Optimización de pickup: ",
-                "Revisar los valores de pickup para mejorar la selectividad.",
-                html.Br(),
-                "• Análisis de líneas críticas: ",
-                "Priorizar la revisión de las líneas con mayor TMT acumulado."
-            ])
+        fault_fig = go.Figure(data=[
+            go.Bar(name='Coordinados', x=list(fault_data.keys()),
+                  y=[d['coordinated'] for d in fault_data.values()],
+                  marker_color='#2ecc71'),
+            go.Bar(name='Descoordinados', x=list(fault_data.keys()),
+                  y=[d['uncoordinated'] for d in fault_data.values()],
+                  marker_color='#e74c3c')
         ])
+        fault_fig.update_layout(
+            title='Análisis de Coordinación por Porcentaje de Falla',
+            xaxis_title='Porcentaje de Falla',
+            yaxis_title='Número de Pares',
+            barmode='stack',
+            plot_bgcolor='white',
+            paper_bgcolor='white'
+        )
 
-        # 9. Tabla de resumen detallado
+        # 7. Gráfica de Ajustes de Relés
+        relay_settings_fig = go.Figure()
+        # TDS vs Pickup para relés principales
+        relay_settings_fig.add_trace(go.Scatter(
+            x=[p.get('main_relay', {}).get('pick_up', 0) for p in all_pairs],
+            y=[p.get('main_relay', {}).get('TDS', 0) for p in all_pairs],
+            mode='markers',
+            name='Relés Principales',
+            marker=dict(color='#3498db')
+        ))
+        # TDS vs Pickup para relés de respaldo
+        relay_settings_fig.add_trace(go.Scatter(
+            x=[p.get('backup_relay', {}).get('pick_up', 0) for p in all_pairs],
+            y=[p.get('backup_relay', {}).get('TDS', 0) for p in all_pairs],
+            mode='markers',
+            name='Relés de Respaldo',
+            marker=dict(color='#e74c3c')
+        ))
+        relay_settings_fig.update_layout(
+            title='Distribución de Ajustes TDS vs Pickup',
+            xaxis_title='Pickup (A)',
+            yaxis_title='TDS',
+            plot_bgcolor='white',
+            paper_bgcolor='white'
+        )
+
+        # 8. Tabla de resumen detallado
         detailed_data = []
         for pair in all_pairs:
             main_relay = pair.get('main_relay', {})
@@ -838,19 +947,19 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
                 'fault': pair.get('fault', 'N/A'),
                 'main_line': main_relay.get('line', 'N/A'),
                 'main_relay': main_relay.get('relay', 'N/A'),
-                'main_tds': f"{main_relay.get('TDS', 0):.5f}",
-                'main_pickup': f"{main_relay.get('pick_up', 0):.5f}",
+                'main_tds': f"{main_relay.get('TDS', 0):.3f}",
+                'main_pickup': f"{main_relay.get('pick_up', 0):.3f}",
                 'main_ishc': f"{main_relay.get('Ishc', 0):.3f}",
                 'main_time': f"{main_relay.get('Time_out', 0):.3f}",
                 'backup_line': backup_relay.get('line', 'N/A'),
                 'backup_relay': backup_relay.get('relay', 'N/A'),
-                'backup_tds': f"{backup_relay.get('TDS', 0):.5f}",
-                'backup_pickup': f"{backup_relay.get('pick_up', 0):.5f}",
+                'backup_tds': f"{backup_relay.get('TDS', 0):.3f}",
+                'backup_pickup': f"{backup_relay.get('pick_up', 0):.3f}",
                 'backup_ishc': f"{backup_relay.get('Ishc', 0):.3f}",
                 'backup_time': f"{backup_relay.get('Time_out', 0):.3f}",
                 'delta_t': f"{pair.get('delta_t', 0):.3f}",
                 'mt': f"{pair.get('mt', 0):.3f}",
-                'status': "Coordinado" if pair.get('delta_t', 0) >= 0 else "Descoordinado"
+                'status': 'Coordinado' if pair.get('delta_t', 0) >= 0 else 'Descoordinado'
             })
 
     except Exception as e:
