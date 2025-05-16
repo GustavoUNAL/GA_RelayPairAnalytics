@@ -65,6 +65,29 @@ def calculate_inverse_time_curve(tds, pickup, i_range):
     # np.nan es mejor porque plotly puede ignorarlos
     return np.nan_to_num(np.array(times), nan=np.nan, posinf=np.nan, neginf=np.nan)
 
+# --- Función para validar que las curvas TCC no se crucen ---
+def validate_tcc_curves(main_tds, main_pickup, backup_tds, backup_pickup, num_points=100):
+    """
+    Valida que las curvas TCC no se crucen en ningún punto.
+    Retorna True si las curvas no se cruzan, False si hay cruce.
+    """
+    # Crear rango de corrientes para comparar
+    min_pickup = min(main_pickup, backup_pickup)
+    max_current = max(main_pickup, backup_pickup) * 20  # Multiplicador para asegurar rango suficiente
+    i_range = np.logspace(np.log10(min_pickup * 1.05), np.log10(max_current), num=num_points)
+    
+    # Calcular tiempos para ambas curvas
+    main_times = calculate_inverse_time_curve(main_tds, main_pickup, i_range)
+    backup_times = calculate_inverse_time_curve(backup_tds, backup_pickup, i_range)
+    
+    # Verificar que la curva de respaldo siempre esté por encima de la principal
+    # (tiempo de respaldo siempre mayor que tiempo principal)
+    for main_time, backup_time in zip(main_times, backup_times):
+        if not np.isnan(main_time) and not np.isnan(backup_time):
+            if backup_time <= main_time:
+                return False
+    return True
+
 # --- Fase 1: Análisis de Datos ---
 coordinated_pairs = []
 uncoordinated_pairs = []
@@ -124,10 +147,26 @@ try:
         pair_info['mt'] = mt
 
         # --- Clasificar ---
-        if delta_t > CTI and mt == 0:  # Cambio en la condición de coordinación
+        # Primero validar que las curvas no se crucen
+        curves_valid = validate_tcc_curves(
+            main_relay_info.get('TDS', 0),
+            main_relay_info.get('pick_up', 0),
+            backup_relay_info.get('TDS', 0),
+            backup_relay_info.get('pick_up', 0)
+        )
+        
+        # Un par es coordinado solo si cumple todas las condiciones
+        if delta_t > CTI and mt == 0 and curves_valid:
             coordinated_pairs.append(pair_info)
         else:
             uncoordinated_pairs.append(pair_info)
+            # Agregar razón de descoordinación
+            if not curves_valid:
+                pair_info['razon_descoordinacion'] = 'Curvas TCC se cruzan'
+            elif delta_t <= CTI:
+                pair_info['razon_descoordinacion'] = f'Δt ({delta_t:.3f}s) <= CTI ({CTI}s)'
+            elif mt != 0:
+                pair_info['razon_descoordinacion'] = f'MT ({mt:.3f}s) != 0'
 
     print("Procesamiento de pares completado.")
 
@@ -255,7 +294,8 @@ app.layout = html.Div([
     html.H1(f"Análisis de Coordinación de Protecciones", style={'textAlign': 'center'}),
     html.H1(f" Escenario Base Automatizado", style={'textAlign': 'center'}),
     html.H3(f"TMT: {tmt_total_scenario:.3f}, Pares de Relés: {total_valid_pairs_scenario}", style={'textAlign': 'center', 'marginTop': '-10px', 'marginBottom': '20px'}),
-    html.H4(f"Criterios de Coordinación: CTI > {CTI}s, MT = 0", style={'textAlign': 'center', 'marginTop': '-10px', 'marginBottom': '20px'}),
+    html.H4(f"Criterios de Coordinación: CTI > {CTI}s, MT = 0, Curvas TCC sin cruce", 
+            style={'textAlign': 'center', 'marginTop': '-10px', 'marginBottom': '20px'}),
     dcc.Tabs([
         dcc.Tab(label=f"Coordinados ({len(coordinated_pairs)})", children=[
             html.Div([
@@ -425,7 +465,8 @@ app.layout = html.Div([
                             {"name": "t_b (Backup)", "id": "backup_time"},
                             {"name": "Δt", "id": "delta_t"},
                             {"name": "MT", "id": "mt"},
-                            {"name": "Estado", "id": "status"}
+                            {"name": "Estado", "id": "status"},
+                            {"name": "Razón Descoordinación", "id": "razon_descoordinacion"}
                         ],
                         style_table={'overflowX': 'auto'},
                         style_cell={
@@ -969,7 +1010,8 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
                 'backup_time': f"{backup_relay.get('Time_out', 0):.3f}",
                 'delta_t': f"{pair.get('delta_t', 0):.3f}",
                 'mt': f"{pair.get('mt', 0):.3f}",
-                'status': 'Coordinado' if pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0 else 'Descoordinado'
+                'status': 'Coordinado' if pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0 else 'Descoordinado',
+                'razon_descoordinacion': pair.get('razon_descoordinacion', 'N/A')
             })
 
     except Exception as e:
@@ -1009,7 +1051,11 @@ if __name__ == '__main__':
             't_b (Backup)': backup.get('Time_out', 'N/A'),
             'Δt': pair.get('delta_t', 'N/A'),
             'MT': pair.get('mt', 'N/A'),
-            'Estado': 'Coordinado' if pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0 else 'Descoordinado'
+            'Estado': 'Coordinado' if (pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0 and 
+                                     validate_tcc_curves(main.get('TDS', 0), main.get('pick_up', 0),
+                                                       backup.get('TDS', 0), backup.get('pick_up', 0))) 
+                     else 'Descoordinado',
+            'Razón Descoordinación': pair.get('razon_descoordinacion', 'N/A')
         })
 
     reporte_df = pd.DataFrame(reporte_data)
