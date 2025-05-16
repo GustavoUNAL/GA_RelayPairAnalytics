@@ -11,6 +11,7 @@ import pandas as pd
 from scipy import stats
 import plotly.express as px
 from plotly.subplots import make_subplots
+import datetime
 
 # --- Constantes ---
 CTI = 0.2  # Intervalo de tiempo de coordinación (segundos)
@@ -123,7 +124,7 @@ try:
         pair_info['mt'] = mt
 
         # --- Clasificar ---
-        if delta_t >= 0:
+        if delta_t > CTI and mt == 0:  # Cambio en la condición de coordinación
             coordinated_pairs.append(pair_info)
         else:
             uncoordinated_pairs.append(pair_info)
@@ -149,7 +150,7 @@ try:
     if skipped_pairs_count > 0:
         print(f"Pares omitidos dentro de '{TARGET_SCENARIO_ID}': {skipped_pairs_count}")
     print(f"Pares válidos analizados para '{TARGET_SCENARIO_ID}': {total_valid_pairs_scenario}")
-    print(f"Coordinados (delta_t >= 0): {len(coordinated_pairs)}")
+    print(f"Coordinados (delta_t > {CTI}s, mt = 0): {len(coordinated_pairs)}")
     print(f"Descoordinados (delta_t < 0): {miscoordination_count_scenario}")
     # TMT es la suma de los valores absolutos de mt negativos
     print(f"Suma Penalización Descoordinación (TMT = Sum |mt|): {tmt_total_scenario:.5f} s")
@@ -239,6 +240,14 @@ print("Datos preparados.")
 # --- Fase 3: Creación de la Aplicación Dash ---
 print("Configurando aplicación Dash...")
 
+# Calcular métricas de TMT para el layout
+if len(uncoordinated_pairs) > 0:
+    tmt_promedio = f"{tmt_total_scenario/len(uncoordinated_pairs):.3f}s"
+    tmt_std = f"{np.std([abs(p.get('mt', 0)) for p in uncoordinated_pairs]):.3f}s"
+else:
+    tmt_promedio = "N/A"
+    tmt_std = "N/A"
+
 app = dash.Dash(__name__)
 server = app.server
 
@@ -246,6 +255,7 @@ app.layout = html.Div([
     html.H1(f"Análisis de Coordinación de Protecciones", style={'textAlign': 'center'}),
     html.H1(f" Escenario Base Automatizado", style={'textAlign': 'center'}),
     html.H3(f"TMT: {tmt_total_scenario:.3f}, Pares de Relés: {total_valid_pairs_scenario}", style={'textAlign': 'center', 'marginTop': '-10px', 'marginBottom': '20px'}),
+    html.H4(f"Criterios de Coordinación: CTI > {CTI}s, MT = 0", style={'textAlign': 'center', 'marginTop': '-10px', 'marginBottom': '20px'}),
     dcc.Tabs([
         dcc.Tab(label=f"Coordinados ({len(coordinated_pairs)})", children=[
             html.Div([
@@ -329,8 +339,8 @@ app.layout = html.Div([
                             html.Div([
                                 html.H5("TMT Total"),
                                 html.H3(f"{tmt_total_scenario:.3f}s", style={'color': '#e67e22'}),
-                                html.P(f"Promedio por par: {tmt_total_scenario/len(uncoordinated_pairs):.3f}s", style={'color': '#e67e22'}),
-                                html.P(f"Desviación estándar: {np.std([abs(p.get('mt', 0)) for p in uncoordinated_pairs]):.3f}s", style={'color': '#e67e22'})
+                                html.P(f"Promedio por par: {tmt_promedio}", style={'color': '#e67e22'}),
+                                html.P(f"Desviación estándar: {tmt_std}", style={'color': '#e67e22'}),
                             ], className="metric-box"),
                             html.Div([
                                 html.H5("Estadísticas Δt"),
@@ -522,37 +532,37 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             
             # Agregar curvas
             coordinated_fig.add_trace(
-                go.Scatter(x=main_times, y=i_range, name='Main',
+                go.Scatter(y=main_times, x=i_range, name='Main',
                           mode='lines', line=dict(color='#3498db'),
-                          hovertemplate='t: %{x:.3f}s<br>I: %{y:.1f}A')
+                          hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A')
             )
             coordinated_fig.add_trace(
-                go.Scatter(x=backup_times, y=i_range, name='Backup',
+                go.Scatter(y=backup_times, x=i_range, name='Backup',
                           mode='lines', line=dict(color='#e74c3c'),
-                          hovertemplate='t: %{x:.3f}s<br>I: %{y:.1f}A')
+                          hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A')
             )
             
             # Agregar puntos de operación
             coordinated_fig.add_trace(
-                go.Scatter(x=[main_relay.get('Time_out', 0)],
-                          y=[main_relay.get('Ishc', 0)],
+                go.Scatter(y=[main_relay.get('Time_out', 0)],
+                          x=[main_relay.get('Ishc', 0)],
                           name='Main Op. Point', mode='markers',
                           marker=dict(size=12, color='#3498db', symbol='star'),
-                          hovertemplate='t_m: %{x:.3f}s<br>I_m: %{y:.1f}A')
+                          hovertemplate='t_m: %{y:.3f}s<br>I_m: %{x:.1f}A')
             )
             coordinated_fig.add_trace(
-                go.Scatter(x=[backup_relay.get('Time_out', 0)],
-                          y=[backup_relay.get('Ishc', 0)],
+                go.Scatter(y=[backup_relay.get('Time_out', 0)],
+                          x=[backup_relay.get('Ishc', 0)],
                           name='Backup Op. Point', mode='markers',
                           marker=dict(size=12, color='#e74c3c', symbol='star'),
-                          hovertemplate='t_b: %{x:.3f}s<br>I_b: %{y:.1f}A')
+                          hovertemplate='t_b: %{y:.3f}s<br>I_b: %{x:.1f}A')
             )
             
-            # Agregar línea horizontal para delta_t
+            # Agregar línea vertical para delta_t
             coordinated_fig.add_trace(
-                go.Scatter(x=[main_relay.get('Time_out', 0),
+                go.Scatter(y=[main_relay.get('Time_out', 0),
                              backup_relay.get('Time_out', 0)],
-                          y=[main_relay.get('Ishc', 0),
+                          x=[main_relay.get('Ishc', 0),
                              main_relay.get('Ishc', 0)],
                           name='Δt', mode='lines',
                           line=dict(color='#2ecc71', width=2, dash='dash'),
@@ -563,8 +573,8 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             # Actualizar layout
             coordinated_fig.update_layout(
                 title=f'Par Coordinado (Δt = {pair.get("delta_t", 0):.3f}s)',
-                xaxis_title='Tiempo de operación (s)',
-                yaxis_title='Corriente (A)',
+                yaxis_title='Tiempo de operación (s)',
+                xaxis_title='Corriente (A)',
                 xaxis_type='log',
                 yaxis_type='log',
                 showlegend=True,
@@ -631,37 +641,37 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             
             # Agregar curvas
             uncoordinated_fig.add_trace(
-                go.Scatter(x=main_times, y=i_range, name='Main',
+                go.Scatter(y=main_times, x=i_range, name='Main',
                           mode='lines', line=dict(color='#3498db'),
-                          hovertemplate='t: %{x:.3f}s<br>I: %{y:.1f}A')
+                          hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A')
             )
             uncoordinated_fig.add_trace(
-                go.Scatter(x=backup_times, y=i_range, name='Backup',
+                go.Scatter(y=backup_times, x=i_range, name='Backup',
                           mode='lines', line=dict(color='#e74c3c'),
-                          hovertemplate='t: %{x:.3f}s<br>I: %{y:.1f}A')
+                          hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A')
             )
             
             # Agregar puntos de operación
             uncoordinated_fig.add_trace(
-                go.Scatter(x=[main_relay.get('Time_out', 0)],
-                          y=[main_relay.get('Ishc', 0)],
+                go.Scatter(y=[main_relay.get('Time_out', 0)],
+                          x=[main_relay.get('Ishc', 0)],
                           name='Main Op. Point', mode='markers',
                           marker=dict(size=12, color='#3498db', symbol='star'),
-                          hovertemplate='t_m: %{x:.3f}s<br>I_m: %{y:.1f}A')
+                          hovertemplate='t_m: %{y:.3f}s<br>I_m: %{x:.1f}A')
             )
             uncoordinated_fig.add_trace(
-                go.Scatter(x=[backup_relay.get('Time_out', 0)],
-                          y=[backup_relay.get('Ishc', 0)],
+                go.Scatter(y=[backup_relay.get('Time_out', 0)],
+                          x=[backup_relay.get('Ishc', 0)],
                           name='Backup Op. Point', mode='markers',
                           marker=dict(size=12, color='#e74c3c', symbol='star'),
-                          hovertemplate='t_b: %{x:.3f}s<br>I_b: %{y:.1f}A')
+                          hovertemplate='t_b: %{y:.3f}s<br>I_b: %{x:.1f}A')
             )
             
-            # Agregar línea horizontal para delta_t
+            # Agregar línea vertical para delta_t
             uncoordinated_fig.add_trace(
-                go.Scatter(x=[main_relay.get('Time_out', 0),
+                go.Scatter(y=[main_relay.get('Time_out', 0),
                              backup_relay.get('Time_out', 0)],
-                          y=[main_relay.get('Ishc', 0),
+                          x=[main_relay.get('Ishc', 0),
                              main_relay.get('Ishc', 0)],
                           name='Δt', mode='lines',
                           line=dict(color='#e74c3c', width=2, dash='dash'),
@@ -672,8 +682,8 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             # Actualizar layout
             uncoordinated_fig.update_layout(
                 title=f'Par Descoordinado (Δt = {pair.get("delta_t", 0):.3f}s)',
-                xaxis_title='Tiempo de operación (s)',
-                yaxis_title='Corriente (A)',
+                yaxis_title='Tiempo de operación (s)',
+                xaxis_title='Corriente (A)',
                 xaxis_type='log',
                 yaxis_type='log',
                 showlegend=True,
@@ -749,15 +759,15 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
         coordination_fig = go.Figure()
         delta_t_values = [p.get('delta_t', 0) for p in all_pairs]
         coordination_fig.add_trace(go.Histogram(
-            x=delta_t_values,
+            y=delta_t_values,
             name='Distribución Δt',
             marker_color='#3498db',
             nbinsx=30
         ))
         coordination_fig.update_layout(
             title='Distribución de Tiempos de Coordinación (Δt)',
-            xaxis_title='Δt (segundos)',
-            yaxis_title='Frecuencia',
+            yaxis_title='Δt (segundos)',
+            xaxis_title='Frecuencia',
             showlegend=False,
             plot_bgcolor='white',
             paper_bgcolor='white'
@@ -792,24 +802,24 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
 
         # 3. Análisis de Sensibilidad
         sensitivity_fig = go.Figure()
-        # TDS vs Delta_t
+        # Ishc vs Delta_t
         sensitivity_fig.add_trace(go.Scatter(
-            x=[p.get('main_relay', {}).get('TDS', 0) for p in all_pairs],
+            x=[p.get('main_relay', {}).get('Ishc', 0) for p in all_pairs],
             y=[p.get('delta_t', 0) for p in all_pairs],
             mode='markers',
-            name='TDS Main vs Δt',
+            name='Ishc Main vs Δt',
             marker=dict(color='#3498db')
         ))
         sensitivity_fig.add_trace(go.Scatter(
-            x=[p.get('backup_relay', {}).get('TDS', 0) for p in all_pairs],
+            x=[p.get('backup_relay', {}).get('Ishc', 0) for p in all_pairs],
             y=[p.get('delta_t', 0) for p in all_pairs],
             mode='markers',
-            name='TDS Backup vs Δt',
+            name='Ishc Backup vs Δt',
             marker=dict(color='#e74c3c')
         ))
         sensitivity_fig.update_layout(
-            title='Sensibilidad: TDS vs Δt',
-            xaxis_title='TDS',
+            title='Sensibilidad: Corriente vs Δt',
+            xaxis_title='Corriente (A)',
             yaxis_title='Δt (segundos)',
             plot_bgcolor='white',
             paper_bgcolor='white'
@@ -914,26 +924,26 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
 
         # 7. Gráfica de Ajustes de Relés
         relay_settings_fig = go.Figure()
-        # TDS vs Pickup para relés principales
+        # Ishc vs Time para relés principales
         relay_settings_fig.add_trace(go.Scatter(
-            x=[p.get('main_relay', {}).get('pick_up', 0) for p in all_pairs],
-            y=[p.get('main_relay', {}).get('TDS', 0) for p in all_pairs],
+            x=[p.get('main_relay', {}).get('Ishc', 0) for p in all_pairs],
+            y=[p.get('main_relay', {}).get('Time_out', 0) for p in all_pairs],
             mode='markers',
             name='Relés Principales',
             marker=dict(color='#3498db')
         ))
-        # TDS vs Pickup para relés de respaldo
+        # Ishc vs Time para relés de respaldo
         relay_settings_fig.add_trace(go.Scatter(
-            x=[p.get('backup_relay', {}).get('pick_up', 0) for p in all_pairs],
-            y=[p.get('backup_relay', {}).get('TDS', 0) for p in all_pairs],
+            x=[p.get('backup_relay', {}).get('Ishc', 0) for p in all_pairs],
+            y=[p.get('backup_relay', {}).get('Time_out', 0) for p in all_pairs],
             mode='markers',
             name='Relés de Respaldo',
             marker=dict(color='#e74c3c')
         ))
         relay_settings_fig.update_layout(
-            title='Distribución de Ajustes TDS vs Pickup',
-            xaxis_title='Pickup (A)',
-            yaxis_title='TDS',
+            title='Distribución de Corrientes vs Tiempos de Operación',
+            xaxis_title='Corriente (A)',
+            yaxis_title='Tiempo de Operación (s)',
             plot_bgcolor='white',
             paper_bgcolor='white'
         )
@@ -959,7 +969,7 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
                 'backup_time': f"{backup_relay.get('Time_out', 0):.3f}",
                 'delta_t': f"{pair.get('delta_t', 0):.3f}",
                 'mt': f"{pair.get('mt', 0):.3f}",
-                'status': 'Coordinado' if pair.get('delta_t', 0) >= 0 else 'Descoordinado'
+                'status': 'Coordinado' if pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0 else 'Descoordinado'
             })
 
     except Exception as e:
@@ -975,6 +985,43 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
 if __name__ == '__main__':
     print("\nIniciando servidor Dash...")
     print(f"Accede a la aplicación en: http://127.0.0.1:8050/")
+    # --- Exportar informe estadístico de pares de relés (solo CSV) ---
+    import datetime
+
+    # Construir DataFrame con todos los pares
+    reporte_data = []
+    for pair in all_pairs:
+        main = pair.get('main_relay', {})
+        backup = pair.get('backup_relay', {})
+        reporte_data.append({
+            'Falla (%)': pair.get('fault', 'N/A'),
+            'Línea Principal': main.get('line', 'N/A'),
+            'Relé Principal': main.get('relay', 'N/A'),
+            'TDS (Main)': main.get('TDS', 'N/A'),
+            'Pickup (Main)': main.get('pick_up', 'N/A'),
+            'I_shc (Main)': main.get('Ishc', 'N/A'),
+            't_m (Main)': main.get('Time_out', 'N/A'),
+            'Línea Backup': backup.get('line', 'N/A'),
+            'Relé Backup': backup.get('relay', 'N/A'),
+            'TDS (Backup)': backup.get('TDS', 'N/A'),
+            'Pickup (Backup)': backup.get('pick_up', 'N/A'),
+            'I_shc (Backup)': backup.get('Ishc', 'N/A'),
+            't_b (Backup)': backup.get('Time_out', 'N/A'),
+            'Δt': pair.get('delta_t', 'N/A'),
+            'MT': pair.get('mt', 'N/A'),
+            'Estado': 'Coordinado' if pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0 else 'Descoordinado'
+        })
+
+    reporte_df = pd.DataFrame(reporte_data)
+
+    # Crear nombre de archivo con fecha y hora para evitar sobrescribir
+    fecha = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    csv_path = f"data/processed/reporte_estadistico_reles_{fecha}.csv"
+
+    # Guardar como CSV
+    reporte_df.to_csv(csv_path, index=False)
+
+    print(f"\nInforme estadístico exportado a: {csv_path}\n")
     app.run_server(debug=True)  # debug=True para desarrollo 
 
 # Agregar estilos CSS
