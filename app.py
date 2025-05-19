@@ -240,7 +240,7 @@ summary_columns_map = {
     "TDS (Backup)": "backup_relay.TDS",
     "Pickup (Backup)": "backup_relay.pick_up",
     "I_shc (Backup)": "backup_relay.Ishc",
-    "t_b (Backup)": "backup_relay.Time_out",
+    "t_b (Backup)" : "backup_relay.Time_out",
     "Δt": "delta_t",
     "MT": "mt"
 }
@@ -331,37 +331,116 @@ app.layout = html.Div([
         ]),
         dcc.Tab(label=f"Descoordinados ({len(uncoordinated_pairs)})", children=[
             html.Div([
-                dcc.Dropdown(
-                    id='uncoordinated-dropdown',
-                    options=uncoordinated_options,
-                    value=uncoordinated_options[0]['value'] if uncoordinated_options else None,
-                    placeholder="Selecciona un par descoordinado...",
-                    style={'width': '70%', 'margin': '20px auto'}
-                ),
-                dcc.Graph(id='uncoordinated-graph', style={'height': '600px', 'width': '90%', 'margin': '0 auto'}),
-                html.H4("Detalles del Par Seleccionado", style={'textAlign': 'center', 'marginTop': '20px'}),
-                dash_table.DataTable(
-                    id='uncoordinated-pair-table',
-                    columns=[{"name": "Parámetro", "id": "parameter"}, {"name": "Valor", "id": "value"}],
-                    style_table={'width': '60%', 'margin': '20px auto'},
-                    style_cell={'textAlign': 'left', 'padding': '5px', 'whiteSpace': 'normal', 'height': 'auto'},
-                    style_header={'fontWeight': 'bold'}
-                ),
-                html.H3("Magnitud de Penalización |mt| (Descoordinados)", style={'textAlign': 'center', 'marginTop': '40px'}),
-                dcc.Graph(id='mt-graph', style={'height': '400px', 'width': '90%', 'margin': '0 auto'}),
-                html.H3("Resumen de Pares Descoordinados", style={'textAlign': 'center', 'marginTop': '40px'}),
-                dash_table.DataTable(
-                    id='uncoordinated-summary-table',
-                    columns=[{"name": i, "id": i} for i in summary_columns_map.keys()],
-                    data=uncoordinated_summary,
-                    style_table={'overflowX': 'auto', 'width': '95%', 'margin': '20px auto'},
-                    style_cell={'textAlign': 'center', 'minWidth': '80px', 'maxWidth': '150px', 'padding': '5px', 'whiteSpace': 'normal'},
-                    style_header={'fontWeight': 'bold', 'textAlign': 'center'},
-                    page_size=10, sort_action="native", filter_action="native",
-                    tooltip_data=[{column: {'value': str(value), 'type': 'markdown'} for column, value in row.items()} for row in uncoordinated_summary] if uncoordinated_summary else None,
-                    tooltip_duration=None
-                )
-            ]),
+                # Primera fila: Dropdown y controles
+                html.Div([
+                    # Dropdown a la izquierda
+                    html.Div([
+                        dcc.Dropdown(
+                            id='uncoordinated-dropdown',
+                            options=uncoordinated_options,
+                            value=uncoordinated_options[0]['value'] if uncoordinated_options else None,
+                            placeholder="Selecciona un par descoordinado...",
+                            style={'width': '100%'}
+                        ),
+                    ], style={'width': '30%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '10px'}),
+                    
+                    # Controles de ajuste a la derecha
+                    html.Div([
+                        html.H4("Ajuste Manual de Coordinación", style={'textAlign': 'center', 'marginBottom': '20px'}),
+                        html.Div([
+                            # Relé Principal
+                            html.Div([
+                                html.H5("Relé Principal", style={'textAlign': 'center', 'marginBottom': '15px'}),
+                                html.Div([
+                                    html.Label("TDS Principal", style={'display': 'block', 'marginBottom': '5px'}),
+                                    dcc.Slider(
+                                        id='main-tds-slider',
+                                        min=0.05,
+                                        max=1.0,
+                                        step=0.01,
+                                        value=0.14,  # Valor inicial
+                                        marks={i/10: str(i/10) for i in range(1, 11)},
+                                        tooltip={"placement": "bottom", "always_visible": True}
+                                    ),
+                                ], style={'marginBottom': '20px'}),
+                                html.Div([
+                                    html.Label("Pickup Principal", style={'display': 'block', 'marginBottom': '5px'}),
+                                    dcc.Slider(
+                                        id='main-pickup-slider',
+                                        min=0.5,
+                                        max=2.0,
+                                        step=0.01,
+                                        value=1.0,  # Valor inicial
+                                        marks={i/2: str(i/2) for i in range(1, 5)},
+                                        tooltip={"placement": "bottom", "always_visible": True}
+                                    ),
+                                ]),
+                            ], style={'width': '45%', 'display': 'inline-block', 'padding': '10px', 'backgroundColor': '#f8f9fa', 'borderRadius': '10px', 'margin': '5px'}),
+                            
+                            # Relé de Respaldo
+                            html.Div([
+                                html.H5("Relé de Respaldo", style={'textAlign': 'center', 'marginBottom': '15px'}),
+                                html.Div([
+                                    html.Label("TDS Respaldo", style={'display': 'block', 'marginBottom': '5px'}),
+                                    dcc.Slider(
+                                        id='backup-tds-slider',
+                                        min=0.05,
+                                        max=1.0,
+                                        step=0.01,
+                                        value=0.14,  # Valor inicial
+                                        marks={i/10: str(i/10) for i in range(1, 11)},
+                                        tooltip={"placement": "bottom", "always_visible": True}
+                                    ),
+                                ], style={'marginBottom': '20px'}),
+                                html.Div([
+                                    html.Label("Pickup Respaldo", style={'display': 'block', 'marginBottom': '5px'}),
+                                    dcc.Slider(
+                                        id='backup-pickup-slider',
+                                        min=0.5,
+                                        max=2.0,
+                                        step=0.01,
+                                        value=1.0,  # Valor inicial
+                                        marks={i/2: str(i/2) for i in range(1, 5)},
+                                        tooltip={"placement": "bottom", "always_visible": True}
+                                    ),
+                                ]),
+                            ], style={'width': '45%', 'display': 'inline-block', 'padding': '10px', 'backgroundColor': '#f8f9fa', 'borderRadius': '10px', 'margin': '5px'}),
+                        ], style={'display': 'flex', 'justifyContent': 'space-between'}),
+                        
+                        # Botón y estado de coordinación
+                        html.Div([
+                            html.Button('Guardar Ajustes', id='save-adjustments-button', 
+                                      style={'margin': '20px auto', 'display': 'block', 
+                                            'padding': '10px 20px', 'fontSize': '16px',
+                                            'backgroundColor': '#3498db', 'color': 'white',
+                                            'border': 'none', 'borderRadius': '5px',
+                                            'cursor': 'pointer'}),
+                            html.Div(id='coordination-status', 
+                                    style={'textAlign': 'center', 'margin': '20px',
+                                          'padding': '15px', 'borderRadius': '10px',
+                                          'backgroundColor': '#f8f9fa'})
+                        ]),
+                    ], style={'width': '65%', 'display': 'inline-block', 'verticalAlign': 'top', 'padding': '10px'}),
+                ], style={'display': 'flex', 'marginBottom': '20px'}),
+                
+                # Segunda fila: Gráfica
+                html.Div([
+                    dcc.Graph(id='uncoordinated-graph', 
+                             style={'height': '600px', 'width': '100%', 'margin': '0 auto'})
+                ], style={'backgroundColor': 'white', 'padding': '20px', 'borderRadius': '10px', 'boxShadow': '0 2px 4px rgba(0,0,0,0.1)'}),
+                
+                # Tercera fila: Tabla de detalles
+                html.Div([
+                    html.H4("Detalles del Par Seleccionado", style={'textAlign': 'center', 'marginTop': '20px'}),
+                    dash_table.DataTable(
+                        id='uncoordinated-pair-table',
+                        columns=[{"name": "Parámetro", "id": "parameter"}, {"name": "Valor", "id": "value"}],
+                        style_table={'width': '60%', 'margin': '20px auto'},
+                        style_cell={'textAlign': 'left', 'padding': '5px', 'whiteSpace': 'normal', 'height': 'auto'},
+                        style_header={'fontWeight': 'bold'}
+                    )
+                ])
+            ])
         ]),
         dcc.Tab(label="Analítica de Datos", children=[
             html.Div([
@@ -497,12 +576,15 @@ app.layout = html.Div([
 # --- Fase 4: Callback para Actualizar Contenido ---
 print("Definiendo callbacks...")
 
+# Configuración global para callbacks
+app.config.suppress_callback_exceptions = True
+app.config.prevent_initial_callbacks = 'initial_duplicate'
+
 @app.callback(
     [Output('coordinated-graph', 'figure'),
      Output('coordinated-pair-table', 'data'),
-     Output('uncoordinated-graph', 'figure'),
+     Output('uncoordinated-graph', 'figure', allow_duplicate=True),
      Output('uncoordinated-pair-table', 'data'),
-     Output('mt-graph', 'figure'),
      Output('coordination-analysis', 'figure'),
      Output('correlation-matrix', 'figure'),
      Output('sensitivity-analysis', 'figure'),
@@ -528,7 +610,6 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
     coordinated_table_data = [{"parameter": "Info", "value": "Selecciona un par coordinado"}]
     uncoordinated_fig = go.Figure(layout=default_fig_layout)
     uncoordinated_table_data = [{"parameter": "Info", "value": "Selecciona un par descoordinado"}]
-    mt_fig = go.Figure(layout={'title': {'text': "Gráfico |mt| (solo para descoordinados)", 'x': 0.5}})
     coordination_fig = go.Figure(layout=default_fig_layout)
     correlation_fig = go.Figure(layout=default_fig_layout)
     sensitivity_fig = go.Figure(layout=default_fig_layout)
@@ -542,7 +623,7 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
     # Verificar si hay datos para procesar
     if not all_pairs:
         return (coordinated_fig, coordinated_table_data, uncoordinated_fig, 
-                uncoordinated_table_data, mt_fig, coordination_fig, correlation_fig,
+                uncoordinated_table_data, coordination_fig, correlation_fig,
                 sensitivity_fig, line_fig, relay_fig, fault_fig, conclusions, detailed_data,
                 relay_settings_fig)
 
@@ -662,20 +743,22 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             main_relay = pair.get('main_relay', {})
             backup_relay = pair.get('backup_relay', {})
             
-            # Crear rango de corrientes para las curvas
+            # Usar valores originales del par
+            main_tds = main_relay.get('TDS', 0)
             main_pickup = main_relay.get('pick_up', 0)
+            backup_tds = backup_relay.get('TDS', 0)
             backup_pickup = backup_relay.get('pick_up', 0)
+            
+            # Crear rango de corrientes para las curvas
             min_pickup = min(main_pickup, backup_pickup)
             max_ishc = max(main_relay.get('Ishc', 0), backup_relay.get('Ishc', 0))
             i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER),
                                 np.log10(max_ishc * MAX_CURRENT_MULTIPLIER),
                                 num=100)
             
-            # Calcular curvas
-            main_times = calculate_inverse_time_curve(main_relay.get('TDS', 0),
-                                                    main_pickup, i_range)
-            backup_times = calculate_inverse_time_curve(backup_relay.get('TDS', 0),
-                                                      backup_pickup, i_range)
+            # Calcular curvas con valores originales
+            main_times = calculate_inverse_time_curve(main_tds, main_pickup, i_range)
+            backup_times = calculate_inverse_time_curve(backup_tds, backup_pickup, i_range)
             
             # Crear gráfica
             uncoordinated_fig = go.Figure()
@@ -708,43 +791,47 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
                           hovertemplate='t_b: %{y:.3f}s<br>I_b: %{x:.1f}A')
             )
             
-            # Agregar línea vertical para delta_t
-            uncoordinated_fig.add_trace(
-                go.Scatter(y=[main_relay.get('Time_out', 0),
-                             backup_relay.get('Time_out', 0)],
-                          x=[main_relay.get('Ishc', 0),
-                             main_relay.get('Ishc', 0)],
-                          name='Δt', mode='lines',
-                          line=dict(color='#e74c3c', width=2, dash='dash'),
-                          hovertemplate='Δt: %{text}',
-                          text=[f'Δt = {pair.get("delta_t", 0):.3f}s'])
-            )
+            # Calcular nuevo delta_t y mt
+            delta_t = backup_relay.get('Time_out', 0) - main_relay.get('Time_out', 0) - CTI
+            mt = (delta_t - abs(delta_t)) / 2
+            
+            # Validar coordinación
+            curves_valid = validate_tcc_curves(main_tds, main_pickup, backup_tds, backup_pickup)
+            is_coordinated = delta_t > CTI and mt == 0 and curves_valid
             
             # Actualizar layout
             uncoordinated_fig.update_layout(
-                title=f'Par Descoordinado (Δt = {pair.get("delta_t", 0):.3f}s)',
+                title=f'Par Descoordinado (Δt = {delta_t:.3f}s)',
                 yaxis_title='Tiempo de operación (s)',
                 xaxis_title='Corriente (A)',
                 xaxis_type='log',
                 yaxis_type='log',
                 showlegend=True,
                 plot_bgcolor='white',
-                paper_bgcolor='white',
-                xaxis=dict(
-                    gridcolor='lightgray',
-                    showgrid=True,
-                    zeroline=True,
-                    zerolinecolor='black',
-                    zerolinewidth=1
-                ),
-                yaxis=dict(
-                    gridcolor='lightgray',
-                    showgrid=True,
-                    zeroline=True,
-                    zerolinecolor='black',
-                    zerolinewidth=1
-                )
+                paper_bgcolor='white'
             )
+            
+            # Crear mensaje de estado
+            status_style = {'color': '#27ae60' if is_coordinated else '#e74c3c'}
+            status_text = html.Div([
+                html.H4("Estado de Coordinación", style={**status_style, 'marginBottom': '15px'}),
+                html.Div([
+                    html.Div([
+                        html.P("Δt:", style={'fontWeight': 'bold'}),
+                        html.P(f"{delta_t:.3f}s", style=status_style)
+                    ], style={'display': 'inline-block', 'marginRight': '20px'}),
+                    html.Div([
+                        html.P("MT:", style={'fontWeight': 'bold'}),
+                        html.P(f"{mt:.3f}s", style=status_style)
+                    ], style={'display': 'inline-block', 'marginRight': '20px'}),
+                    html.Div([
+                        html.P("Curvas TCC:", style={'fontWeight': 'bold'}),
+                        html.P("No se cruzan" if curves_valid else "Se cruzan", style=status_style)
+                    ], style={'display': 'inline-block'})
+                ], style={'marginBottom': '15px'}),
+                html.H5("Estado: " + ("COORDINADO" if is_coordinated else "DESCOORDINADO"), 
+                        style={**status_style, 'marginTop': '10px'})
+            ])
             
             # Actualizar tabla de datos
             uncoordinated_table_data = [
@@ -761,39 +848,9 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
                 {"parameter": "Pickup (Backup)", "value": f"{backup_relay.get('pick_up', 0):.5f}"},
                 {"parameter": "I_shc (Backup)", "value": f"{backup_relay.get('Ishc', 0):.3f}"},
                 {"parameter": "t_b (Backup)", "value": f"{backup_relay.get('Time_out', 0):.3f}"},
-                {"parameter": "Δt", "value": f"{pair.get('delta_t', 0):.3f}"},
-                {"parameter": "MT", "value": f"{pair.get('mt', 0):.3f}"}
+                {"parameter": "Δt", "value": f"{delta_t:.3f}"},
+                {"parameter": "MT", "value": f"{mt:.3f}"}
             ]
-
-            # Actualizar gráfica de MT
-            mt_values = [abs(pair.get('mt', 0)) for pair in uncoordinated_pairs]
-            mt_fig = go.Figure(data=[
-                go.Bar(x=list(range(len(mt_values))), y=mt_values,
-                      marker_color='#e74c3c',
-                      hovertemplate='|mt|: %{y:.3f}s')
-            ])
-            mt_fig.update_layout(
-                title='Magnitud de Penalización |mt| (Descoordinados)',
-                xaxis_title='Índice del Par',
-                yaxis_title='|mt| (s)',
-                showlegend=False,
-                plot_bgcolor='white',
-                paper_bgcolor='white',
-                xaxis=dict(
-                    gridcolor='lightgray',
-                    showgrid=True,
-                    zeroline=True,
-                    zerolinecolor='black',
-                    zerolinewidth=1
-                ),
-                yaxis=dict(
-                    gridcolor='lightgray',
-                    showgrid=True,
-                    zeroline=True,
-                    zerolinecolor='black',
-                    zerolinewidth=1
-                )
-            )
 
         # Generar gráficas de analítica automáticamente
         # 1. Gráfica de Análisis de Coordinación
@@ -1019,9 +1076,155 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
         traceback.print_exc()
 
     return (coordinated_fig, coordinated_table_data, uncoordinated_fig, 
-            uncoordinated_table_data, mt_fig, coordination_fig, correlation_fig,
+            uncoordinated_table_data, coordination_fig, correlation_fig,
             sensitivity_fig, line_fig, relay_fig, fault_fig, conclusions, detailed_data,
             relay_settings_fig)
+
+# Modificar el callback para actualizar los valores iniciales de los sliders y la gráfica
+@app.callback(
+    [Output('main-tds-slider', 'value'),
+     Output('main-pickup-slider', 'value'),
+     Output('backup-tds-slider', 'value'),
+     Output('backup-pickup-slider', 'value'),
+     Output('uncoordinated-graph', 'figure', allow_duplicate=True),
+     Output('coordination-status', 'children', allow_duplicate=True)],
+    [Input('uncoordinated-dropdown', 'value'),
+     Input('main-tds-slider', 'value'),
+     Input('main-pickup-slider', 'value'),
+     Input('backup-tds-slider', 'value'),
+     Input('backup-pickup-slider', 'value')],
+    prevent_initial_call='initial_duplicate'
+)
+def update_coordination_interface(uncoordinated_idx, main_tds, main_pickup, backup_tds, backup_pickup):
+    # Obtener el contexto del callback para determinar qué input disparó la actualización
+    ctx = callback_context
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
+    
+    # Si el trigger es el dropdown, actualizar los valores de los sliders
+    if trigger_id == 'uncoordinated-dropdown':
+        if uncoordinated_idx is None or uncoordinated_idx >= len(uncoordinated_pairs):
+            return 0.14, 1.0, 0.14, 1.0, go.Figure(), "Selecciona un par descoordinado"
+        
+        pair = uncoordinated_pairs[uncoordinated_idx]
+        main_relay = pair.get('main_relay', {})
+        backup_relay = pair.get('backup_relay', {})
+        
+        # Retornar valores iniciales de los sliders
+        return (
+            main_relay.get('TDS', 0.14),
+            main_relay.get('pick_up', 1.0),
+            backup_relay.get('TDS', 0.14),
+            backup_relay.get('pick_up', 1.0),
+            go.Figure(),  # Figura vacía inicial
+            "Selecciona un par descoordinado"  # Estado inicial
+        )
+    
+    # Si el trigger es cualquiera de los sliders, actualizar la gráfica y el estado
+    if uncoordinated_idx is None or uncoordinated_idx >= len(uncoordinated_pairs):
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, go.Figure(), "Selecciona un par descoordinado"
+    
+    pair = uncoordinated_pairs[uncoordinated_idx]
+    main_relay = pair.get('main_relay', {})
+    backup_relay = pair.get('backup_relay', {})
+    
+    # Usar valores de los sliders
+    main_tds = main_tds or main_relay.get('TDS', 0)
+    main_pickup = main_pickup or main_relay.get('pick_up', 0)
+    backup_tds = backup_tds or backup_relay.get('TDS', 0)
+    backup_pickup = backup_pickup or backup_relay.get('pick_up', 0)
+    
+    # Crear rango de corrientes para las curvas
+    min_pickup = min(main_pickup, backup_pickup)
+    max_ishc = max(main_relay.get('Ishc', 0), backup_relay.get('Ishc', 0))
+    i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER),
+                         np.log10(max_ishc * MAX_CURRENT_MULTIPLIER),
+                         num=100)
+    
+    # Calcular curvas con nuevos valores
+    main_times = calculate_inverse_time_curve(main_tds, main_pickup, i_range)
+    backup_times = calculate_inverse_time_curve(backup_tds, backup_pickup, i_range)
+    
+    # Crear gráfica
+    fig = go.Figure()
+    
+    # Agregar curvas
+    fig.add_trace(go.Scatter(y=main_times, x=i_range, name='Main',
+                            mode='lines', line=dict(color='#3498db'),
+                            hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A'))
+    fig.add_trace(go.Scatter(y=backup_times, x=i_range, name='Backup',
+                            mode='lines', line=dict(color='#e74c3c'),
+                            hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A'))
+    
+    # Agregar puntos de operación
+    fig.add_trace(go.Scatter(y=[main_relay.get('Time_out', 0)],
+                            x=[main_relay.get('Ishc', 0)],
+                            name='Main Op. Point', mode='markers',
+                            marker=dict(size=12, color='#3498db', symbol='star'),
+                            hovertemplate='t_m: %{y:.3f}s<br>I_m: %{x:.1f}A'))
+    fig.add_trace(go.Scatter(y=[backup_relay.get('Time_out', 0)],
+                            x=[backup_relay.get('Ishc', 0)],
+                            name='Backup Op. Point', mode='markers',
+                            marker=dict(size=12, color='#e74c3c', symbol='star'),
+                            hovertemplate='t_b: %{y:.3f}s<br>I_b: %{x:.1f}A'))
+    
+    # Calcular nuevo delta_t y mt
+    delta_t = backup_relay.get('Time_out', 0) - main_relay.get('Time_out', 0) - CTI
+    mt = (delta_t - abs(delta_t)) / 2
+    
+    # Validar coordinación
+    curves_valid = validate_tcc_curves(main_tds, main_pickup, backup_tds, backup_pickup)
+    is_coordinated = delta_t > CTI and mt == 0 and curves_valid
+    
+    # Actualizar layout
+    fig.update_layout(
+        title=f'Par Descoordinado (Δt = {delta_t:.3f}s)',
+        yaxis_title='Tiempo de operación (s)',
+        xaxis_title='Corriente (A)',
+        xaxis_type='log',
+        yaxis_type='log',
+        showlegend=True,
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        xaxis=dict(
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=True,
+            zerolinecolor='black',
+            zerolinewidth=1
+        ),
+        yaxis=dict(
+            gridcolor='lightgray',
+            showgrid=True,
+            zeroline=True,
+            zerolinecolor='black',
+            zerolinewidth=1
+        )
+    )
+    
+    # Crear mensaje de estado con mejor formato
+    status_style = {'color': '#27ae60' if is_coordinated else '#e74c3c'}
+    status_text = html.Div([
+        html.H4("Estado de Coordinación", style={**status_style, 'marginBottom': '15px'}),
+        html.Div([
+            html.Div([
+                html.P("Δt:", style={'fontWeight': 'bold'}),
+                html.P(f"{delta_t:.3f}s", style=status_style)
+            ], style={'display': 'inline-block', 'marginRight': '20px'}),
+            html.Div([
+                html.P("MT:", style={'fontWeight': 'bold'}),
+                html.P(f"{mt:.3f}s", style=status_style)
+            ], style={'display': 'inline-block', 'marginRight': '20px'}),
+            html.Div([
+                html.P("Curvas TCC:", style={'fontWeight': 'bold'}),
+                html.P("No se cruzan" if curves_valid else "Se cruzan", style=status_style)
+            ], style={'display': 'inline-block'})
+        ], style={'marginBottom': '15px'}),
+        html.H5("Estado: " + ("COORDINADO" if is_coordinated else "DESCOORDINADO"), 
+                style={**status_style, 'marginTop': '10px'})
+    ])
+    
+    # Retornar valores actualizados de los sliders y la gráfica
+    return dash.no_update, dash.no_update, dash.no_update, dash.no_update, fig, status_text
 
 # --- Fase 5: Ejecutar la Aplicación ---
 if __name__ == '__main__':
