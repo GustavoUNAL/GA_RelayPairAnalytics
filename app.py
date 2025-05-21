@@ -39,58 +39,89 @@ def calculate_inverse_time_curve(tds, pickup, i_range):
     """Calcula los tiempos de operación para un rango de corrientes."""
     times = []
     # Evitar división por cero o errores si pickup es muy bajo o cero
-    if pickup <= 1e-6:
-        # Devolver un array de NaNs o un valor alto si el pickup no es válido
-        return np.full_like(i_range, np.nan)
+    if pickup <= 1e-6 or tds <= 1e-6:
+        return np.full_like(i_range, np.inf)
 
     for i in i_range:
         multiple = i / pickup
         if multiple <= 1.0:  # No opera por debajo del pickup
-            time = np.inf  # O un valor muy alto para escala log, o np.nan
+            time = np.inf
         else:
             try:
                 # Formula IEC / IEEE (simplificada)
                 denominator = (multiple ** CURVE_B) - 1
                 if denominator <= 1e-9:  # Evitar división por número muy cercano a cero
-                    time = np.inf  # O un valor muy alto
+                    time = np.inf
                 else:
                     time = tds * (CURVE_A / denominator)
-                # Asegurarse que el tiempo no sea negativo (puede pasar por errores numéricos)
-                if time < 0:
+                # Asegurarse que el tiempo no sea negativo o muy pequeño
+                if time < 1e-6:
                     time = np.inf
             except (OverflowError, ValueError):
-                time = np.inf  # Manejar errores matemáticos
+                time = np.inf
         times.append(time)
-    # Reemplazar infinitos con NaN o un valor máximo para graficar en escala log
-    # np.nan es mejor porque plotly puede ignorarlos
-    return np.nan_to_num(np.array(times), nan=np.nan, posinf=np.nan, neginf=np.nan)
+    
+    return np.array(times)
 
 # --- Función para validar que las curvas TCC no se crucen ---
-def validate_tcc_curves(main_tds, main_pickup, backup_tds, backup_pickup, num_points=100):
+def validate_tcc_curves(main_tds, main_pickup, backup_tds, backup_pickup, num_points=1000):
     """
     Valida que las curvas TCC no se crucen en ningún punto.
     Retorna True si las curvas no se cruzan, False si hay cruce.
     """
     # Crear rango de corrientes para comparar
     min_pickup = min(main_pickup, backup_pickup)
-    max_current = max(main_pickup, backup_pickup) * 20  # Multiplicador para asegurar rango suficiente
-    i_range = np.logspace(np.log10(min_pickup * 1.05), np.log10(max_current), num=num_points)
+    max_current = max(main_pickup, backup_pickup) * MAX_CURRENT_MULTIPLIER
+    i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER), 
+                         np.log10(max_current), num=num_points)
     
     # Calcular tiempos para ambas curvas
     main_times = calculate_inverse_time_curve(main_tds, main_pickup, i_range)
     backup_times = calculate_inverse_time_curve(backup_tds, backup_pickup, i_range)
     
-    # Verificar que la curva de respaldo siempre esté por encima de la principal
-    # (tiempo de respaldo siempre mayor que tiempo principal)
-    for main_time, backup_time in zip(main_times, backup_times):
-        if not np.isnan(main_time) and not np.isnan(backup_time):
-            if backup_time <= main_time:
-                return False
-    return True
+    # Encontrar el punto de cruce si existe
+    crossing_point = None
+    for i in range(len(i_range)-1):
+        # Solo considerar puntos donde ambos tiempos son finitos
+        if not np.isinf(main_times[i]) and not np.isinf(backup_times[i]) and \
+           not np.isinf(main_times[i+1]) and not np.isinf(backup_times[i+1]):
+            
+            # Verificar si hay un cruce entre este punto y el siguiente
+            if (backup_times[i] > main_times[i] and backup_times[i+1] <= main_times[i+1]) or \
+               (backup_times[i] <= main_times[i] and backup_times[i+1] > main_times[i+1]):
+                
+                # Encontrar el punto de cruce por interpolación lineal
+                t1 = main_times[i]
+                t2 = main_times[i+1]
+                b1 = backup_times[i]
+                b2 = backup_times[i+1]
+                i1 = i_range[i]
+                i2 = i_range[i+1]
+                
+                # Calcular el punto de cruce
+                if abs(t2 - t1) > 1e-10 and abs(b2 - b1) > 1e-10:
+                    # Interpolar para encontrar el punto exacto
+                    alpha = (b1 - t1) / ((t2 - t1) - (b2 - b1))
+                    if 0 <= alpha <= 1:
+                        current_cross = i1 + alpha * (i2 - i1)
+                        time_cross = t1 + alpha * (t2 - t1)
+                        crossing_point = (current_cross, time_cross)
+                        
+                        print(f"\nDetalles del punto de cruce:")
+                        print(f"Corriente: {current_cross:.3f}A")
+                        print(f"Tiempo: {time_cross:.3f}s")
+                        print(f"Tiempo principal en ese punto: {time_cross:.3f}s")
+                        print(f"Tiempo backup en ese punto: {time_cross:.3f}s")
+                        print(f"Pickup principal: {main_pickup:.3f}A")
+                        print(f"Pickup backup: {backup_pickup:.3f}A")
+                        return False, crossing_point
+    
+    return True, None
 
 # --- Fase 1: Análisis de Datos ---
 coordinated_pairs = []
 uncoordinated_pairs = []
+critical_pairs = []  # Nueva lista para pares con coordinación crítica
 tmt_total_scenario = 0.0
 total_valid_pairs_scenario = 0
 scenario_pairs_found = 0
@@ -148,13 +179,16 @@ try:
 
         # --- Clasificar ---
         # Primero validar que las curvas no se crucen
-        curves_valid = validate_tcc_curves(
+        curves_valid, crossing_point = validate_tcc_curves(
             main_relay_info.get('TDS', 0),
             main_relay_info.get('pick_up', 0),
             backup_relay_info.get('TDS', 0),
             backup_relay_info.get('pick_up', 0)
         )
         
+        # Clasificar el par según su estado
+        if abs(delta_t - CTI) < 1e-6:  # Coordinación crítica
+            critical_pairs.append(pair_info)
         # Un par es coordinado solo si cumple todas las condiciones
         if delta_t > CTI and mt == 0 and curves_valid:
             coordinated_pairs.append(pair_info)
@@ -584,7 +618,7 @@ app.config.prevent_initial_callbacks = 'initial_duplicate'
     [Output('coordinated-graph', 'figure'),
      Output('coordinated-pair-table', 'data'),
      Output('uncoordinated-graph', 'figure', allow_duplicate=True),
-     Output('uncoordinated-pair-table', 'data'),
+     Output('uncoordinated-pair-table', 'data', allow_duplicate=True),
      Output('coordination-analysis', 'figure'),
      Output('correlation-matrix', 'figure'),
      Output('sensitivity-analysis', 'figure'),
@@ -634,11 +668,15 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             main_relay = pair.get('main_relay', {})
             backup_relay = pair.get('backup_relay', {})
             
-            # Crear rango de corrientes para las curvas
+            # Obtener valores de corrientes y pickups
+            main_ishc = main_relay.get('Ishc', 0)
+            backup_ishc = backup_relay.get('Ishc', 0)
             main_pickup = main_relay.get('pick_up', 0)
             backup_pickup = backup_relay.get('pick_up', 0)
+            
+            # Crear rango de corrientes para las curvas
             min_pickup = min(main_pickup, backup_pickup)
-            max_ishc = max(main_relay.get('Ishc', 0), backup_relay.get('Ishc', 0))
+            max_ishc = max(main_ishc, backup_ishc)
             i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER),
                                 np.log10(max_ishc * MAX_CURRENT_MULTIPLIER),
                                 num=100)
@@ -667,14 +705,14 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             # Agregar puntos de operación
             coordinated_fig.add_trace(
                 go.Scatter(y=[main_relay.get('Time_out', 0)],
-                          x=[main_relay.get('Ishc', 0)],
+                          x=[main_ishc],
                           name='Main Op. Point', mode='markers',
                           marker=dict(size=12, color='#3498db', symbol='star'),
                           hovertemplate='t_m: %{y:.3f}s<br>I_m: %{x:.1f}A')
             )
             coordinated_fig.add_trace(
                 go.Scatter(y=[backup_relay.get('Time_out', 0)],
-                          x=[backup_relay.get('Ishc', 0)],
+                          x=[backup_ishc],
                           name='Backup Op. Point', mode='markers',
                           marker=dict(size=12, color='#e74c3c', symbol='star'),
                           hovertemplate='t_b: %{y:.3f}s<br>I_b: %{x:.1f}A')
@@ -684,8 +722,8 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             coordinated_fig.add_trace(
                 go.Scatter(y=[main_relay.get('Time_out', 0),
                              backup_relay.get('Time_out', 0)],
-                          x=[main_relay.get('Ishc', 0),
-                             main_relay.get('Ishc', 0)],
+                          x=[main_ishc,
+                             main_ishc],
                           name='Δt', mode='lines',
                           line=dict(color='#2ecc71', width=2, dash='dash'),
                           hovertemplate='Δt: %{text}',
@@ -724,14 +762,14 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
                 {"parameter": "Línea Principal", "value": main_relay.get('line', 'N/A')},
                 {"parameter": "Relé Principal", "value": main_relay.get('relay', 'N/A')},
                 {"parameter": "TDS (Main)", "value": f"{main_relay.get('TDS', 0):.5f}"},
-                {"parameter": "Pickup (Main)", "value": f"{main_relay.get('pick_up', 0):.5f}"},
-                {"parameter": "I_shc (Main)", "value": f"{main_relay.get('Ishc', 0):.3f}"},
+                {"parameter": "Pickup (Main)", "value": f"{main_pickup:.5f}"},
+                {"parameter": "I_shc (Main)", "value": f"{main_ishc:.3f}"},
                 {"parameter": "t_m (Main)", "value": f"{main_relay.get('Time_out', 0):.3f}"},
                 {"parameter": "Línea Backup", "value": backup_relay.get('line', 'N/A')},
                 {"parameter": "Relé Backup", "value": backup_relay.get('relay', 'N/A')},
                 {"parameter": "TDS (Backup)", "value": f"{backup_relay.get('TDS', 0):.5f}"},
-                {"parameter": "Pickup (Backup)", "value": f"{backup_relay.get('pick_up', 0):.5f}"},
-                {"parameter": "I_shc (Backup)", "value": f"{backup_relay.get('Ishc', 0):.3f}"},
+                {"parameter": "Pickup (Backup)", "value": f"{backup_pickup:.5f}"},
+                {"parameter": "I_shc (Backup)", "value": f"{backup_ishc:.3f}"},
                 {"parameter": "t_b (Backup)", "value": f"{backup_relay.get('Time_out', 0):.3f}"},
                 {"parameter": "Δt", "value": f"{pair.get('delta_t', 0):.3f}"},
                 {"parameter": "MT", "value": f"{pair.get('mt', 0):.3f}"}
@@ -743,15 +781,19 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             main_relay = pair.get('main_relay', {})
             backup_relay = pair.get('backup_relay', {})
             
+            # Obtener valores de corrientes y pickups
+            main_ishc = main_relay.get('Ishc', 0)
+            backup_ishc = backup_relay.get('Ishc', 0)
+            main_pickup = main_relay.get('pick_up', 0)
+            backup_pickup = backup_relay.get('pick_up', 0)
+            
             # Usar valores originales del par
             main_tds = main_relay.get('TDS', 0)
-            main_pickup = main_relay.get('pick_up', 0)
             backup_tds = backup_relay.get('TDS', 0)
-            backup_pickup = backup_relay.get('pick_up', 0)
             
             # Crear rango de corrientes para las curvas
             min_pickup = min(main_pickup, backup_pickup)
-            max_ishc = max(main_relay.get('Ishc', 0), backup_relay.get('Ishc', 0))
+            max_ishc = max(main_ishc, backup_ishc)
             i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER),
                                 np.log10(max_ishc * MAX_CURRENT_MULTIPLIER),
                                 num=100)
@@ -760,7 +802,118 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             main_times = calculate_inverse_time_curve(main_tds, main_pickup, i_range)
             backup_times = calculate_inverse_time_curve(backup_tds, backup_pickup, i_range)
             
-            # Crear gráfica
+            # Calcular nuevos tiempos de operación para las corrientes de falla
+            if main_ishc <= main_pickup:
+                coordination_state = "ERROR: I_shc ≤ Pickup (Main)"
+                status_color = '#e74c3c'
+                delta_t = np.nan
+                mt = np.nan
+                main_time_out = np.inf
+            else:
+                main_time_out = calculate_inverse_time_curve(main_tds, main_pickup, np.array([main_ishc]))[0]
+                
+            if backup_ishc <= backup_pickup:
+                coordination_state = "ERROR: I_shc ≤ Pickup (Backup)"
+                status_color = '#e74c3c'
+                delta_t = np.nan
+                mt = np.nan
+                backup_time_out = np.inf
+            else:
+                backup_time_out = calculate_inverse_time_curve(backup_tds, backup_pickup, np.array([backup_ishc]))[0]
+
+            # Si ambos tiempos son válidos, calcular delta_t y mt
+            if not np.isinf(main_time_out) and not np.isinf(backup_time_out):
+                delta_t = backup_time_out - main_time_out - CTI
+                mt = (delta_t - abs(delta_t)) / 2
+                
+                # Validar coordinación
+                curves_valid, crossing_point = validate_tcc_curves(main_tds, main_pickup, backup_tds, backup_pickup)
+                
+                # Determinar el estado de coordinación
+                if delta_t > CTI and mt == 0 and curves_valid:
+                    coordination_state = "COORDINADO"
+                    status_color = '#27ae60'  # Verde para coordinado
+                elif abs(delta_t - CTI) < 1e-6:  # Usar una pequeña tolerancia para comparación de floats
+                    coordination_state = "COORDINACIÓN CRÍTICA"
+                    status_color = '#f39c12'  # Naranja para crítico
+                else:
+                    coordination_state = "DESCOORDINADO"
+                    status_color = '#e74c3c'  # Rojo para descoordinado
+
+            # Crear mensaje de estado con mejor formato y detalle del cálculo
+            status_style = {'color': status_color}
+            status_text = html.Div([
+                html.H4("Estado de Coordinación", style={**status_style, 'marginBottom': '15px'}),
+                html.Div([
+                    html.Div([
+                        html.P("Corrientes de Falla:", style={'fontWeight': 'bold'}),
+                        html.P(f"Main: {main_ishc:.3f}A (Pickup: {main_pickup:.3f}A)", 
+                              style={'color': '#e74c3c' if main_ishc <= main_pickup else '#27ae60'}),
+                        html.P(f"Backup: {backup_ishc:.3f}A (Pickup: {backup_pickup:.3f}A)",
+                              style={'color': '#e74c3c' if backup_ishc <= backup_pickup else '#27ae60'})
+                    ], style={'display': 'block', 'marginBottom': '10px'}),
+                    html.Div([
+                        html.P("Δt = t_b - t_m - CTI:", style={'fontWeight': 'bold'}),
+                        html.P(f"{backup_time_out:.3f}s - {main_time_out:.3f}s - {CTI}s = {delta_t:.3f}s" 
+                              if not np.isnan(delta_t) else "No se puede calcular (I_shc ≤ Pickup)",
+                              style=status_style)
+                    ], style={'display': 'block', 'marginBottom': '10px'}),
+                    html.Div([
+                        html.P("MT:", style={'fontWeight': 'bold'}),
+                        html.P(f"{mt:.3f}s" if not np.isnan(mt) else "N/A", style=status_style)
+                    ], style={'display': 'inline-block', 'marginRight': '20px'}),
+                    html.Div([
+                        html.P("Curvas TCC:", style={'fontWeight': 'bold'}),
+                        html.P("No se cruzan" if curves_valid else "Se cruzan", style=status_style)
+                    ], style={'display': 'inline-block'})
+                ], style={'marginBottom': '15px'}),
+                html.H5(f"Estado: {coordination_state}", 
+                        style={**status_style, 'marginTop': '10px'}),
+                html.Div([
+                    html.P("Criterios de Coordinación:", style={'fontWeight': 'bold', 'marginTop': '15px'}),
+                    html.Ul([
+                        html.Li(f"Δt > CTI ({CTI}s): {'✓' if delta_t > CTI else '✗'} ({delta_t:.3f}s)" 
+                              if not np.isnan(delta_t) else f"Δt > CTI ({CTI}s): ✗ (No se puede calcular)"),
+                        html.Li(f"MT = 0: {'✓' if mt == 0 else '✗'} ({mt:.3f}s)" 
+                              if not np.isnan(mt) else "MT = 0: ✗ (No se puede calcular)"),
+                        html.Li(f"Curvas TCC sin cruce: {'✓' if curves_valid else '✗'}")
+                    ], style={'listStyleType': 'none', 'padding': '0'})
+                ])
+            ])
+            
+            # Si hay punto de cruce, agregar información detallada
+            if crossing_point:
+                current_cross, time_cross = crossing_point
+                status_text.children.append(html.Div([
+                    html.H5("Detalles del Punto de Cruce:", style={'marginTop': '20px'}),
+                    html.P(f"Corriente: {current_cross:.3f}A"),
+                    html.P(f"Tiempo: {time_cross:.3f}s"),
+                    html.P(f"Pickup principal: {main_pickup:.3f}A"),
+                    html.P(f"Pickup backup: {backup_pickup:.3f}A")
+                ], style={'backgroundColor': '#f8f9fa', 'padding': '15px', 'borderRadius': '5px', 'marginTop': '15px'}))
+            
+            # Actualizar tabla de datos con los nuevos tiempos calculados y el detalle del delta_t
+            uncoordinated_table_data = [
+                {"parameter": "Falla (%)", "value": pair.get('fault', 'N/A')},
+                {"parameter": "Línea Principal", "value": main_relay.get('line', 'N/A')},
+                {"parameter": "Relé Principal", "value": main_relay.get('relay', 'N/A')},
+                {"parameter": "TDS (Main)", "value": f"{main_tds:.5f}"},
+                {"parameter": "Pickup (Main)", "value": f"{main_pickup:.5f}"},
+                {"parameter": "I_shc (Main)", "value": f"{main_ishc:.3f}"},
+                {"parameter": "t_m (Main)", "value": f"{main_time_out:.3f}" if not np.isinf(main_time_out) else "∞"},
+                {"parameter": "Línea Backup", "value": backup_relay.get('line', 'N/A')},
+                {"parameter": "Relé Backup", "value": backup_relay.get('relay', 'N/A')},
+                {"parameter": "TDS (Backup)", "value": f"{backup_tds:.5f}"},
+                {"parameter": "Pickup (Backup)", "value": f"{backup_pickup:.5f}"},
+                {"parameter": "I_shc (Backup)", "value": f"{backup_ishc:.3f}"},
+                {"parameter": "t_b (Backup)", "value": f"{backup_time_out:.3f}" if not np.isinf(backup_time_out) else "∞"},
+                {"parameter": "CTI", "value": f"{CTI}"},
+                {"parameter": "Δt = t_b - t_m - CTI", "value": f"{delta_t:.3f}" if not np.isnan(delta_t) else "N/A"},
+                {"parameter": "MT", "value": f"{mt:.3f}" if not np.isnan(mt) else "N/A"},
+                {"parameter": "Estado", "value": coordination_state}
+            ]
+            
+            # Crear la figura con las curvas TCC
             uncoordinated_fig = go.Figure()
             
             # Agregar curvas
@@ -775,88 +928,66 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
                           hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A')
             )
             
-            # Agregar puntos de operación
-            uncoordinated_fig.add_trace(
-                go.Scatter(y=[main_relay.get('Time_out', 0)],
-                          x=[main_relay.get('Ishc', 0)],
-                          name='Main Op. Point', mode='markers',
-                          marker=dict(size=12, color='#3498db', symbol='star'),
-                          hovertemplate='t_m: %{y:.3f}s<br>I_m: %{x:.1f}A')
-            )
-            uncoordinated_fig.add_trace(
-                go.Scatter(y=[backup_relay.get('Time_out', 0)],
-                          x=[backup_relay.get('Ishc', 0)],
-                          name='Backup Op. Point', mode='markers',
-                          marker=dict(size=12, color='#e74c3c', symbol='star'),
-                          hovertemplate='t_b: %{y:.3f}s<br>I_b: %{x:.1f}A')
-            )
+            # Agregar puntos de operación si los tiempos son válidos
+            if not np.isinf(main_time_out):
+                uncoordinated_fig.add_trace(
+                    go.Scatter(y=[main_time_out],
+                              x=[main_ishc],
+                              name='Main Op. Point', mode='markers',
+                              marker=dict(size=12, color='#3498db', symbol='star'),
+                              hovertemplate='t_m: %{y:.3f}s<br>I_m: %{x:.1f}A')
+                )
             
-            # Calcular nuevo delta_t y mt
-            delta_t = backup_relay.get('Time_out', 0) - main_relay.get('Time_out', 0) - CTI
-            mt = (delta_t - abs(delta_t)) / 2
+            if not np.isinf(backup_time_out):
+                uncoordinated_fig.add_trace(
+                    go.Scatter(y=[backup_time_out],
+                              x=[backup_ishc],
+                              name='Backup Op. Point', mode='markers',
+                              marker=dict(size=12, color='#e74c3c', symbol='star'),
+                              hovertemplate='t_b: %{y:.3f}s<br>I_b: %{x:.1f}A')
+                )
             
-            # Validar coordinación
-            curves_valid = validate_tcc_curves(main_tds, main_pickup, backup_tds, backup_pickup)
-            is_coordinated = delta_t > CTI and mt == 0 and curves_valid
+            # Agregar punto de cruce si existe
+            if crossing_point:
+                uncoordinated_fig.add_trace(
+                    go.Scatter(y=[crossing_point[1]],
+                              x=[crossing_point[0]],
+                              name='Punto de Cruce',
+                              mode='markers',
+                              marker=dict(size=12, color='#f1c40f', symbol='diamond'),
+                              hovertemplate='Punto de cruce<br>t: %{y:.3f}s<br>I: %{x:.1f}A')
+                )
             
             # Actualizar layout
             uncoordinated_fig.update_layout(
-                title=f'Par Descoordinado (Δt = {delta_t:.3f}s)',
+                title=f'Par {coordination_state} (Δt = {delta_t:.3f}s)' if not np.isnan(delta_t) else f'Par {coordination_state}',
                 yaxis_title='Tiempo de operación (s)',
                 xaxis_title='Corriente (A)',
                 xaxis_type='log',
                 yaxis_type='log',
                 showlegend=True,
                 plot_bgcolor='white',
-                paper_bgcolor='white'
+                paper_bgcolor='white',
+                xaxis=dict(
+                    gridcolor='lightgray',
+                    showgrid=True,
+                    zeroline=True,
+                    zerolinecolor='black',
+                    zerolinewidth=1
+                ),
+                yaxis=dict(
+                    gridcolor='lightgray',
+                    showgrid=True,
+                    zeroline=True,
+                    zerolinecolor='black',
+                    zerolinewidth=1
+                )
             )
-            
-            # Crear mensaje de estado
-            status_style = {'color': '#27ae60' if is_coordinated else '#e74c3c'}
-            status_text = html.Div([
-                html.H4("Estado de Coordinación", style={**status_style, 'marginBottom': '15px'}),
-                html.Div([
-                    html.Div([
-                        html.P("Δt:", style={'fontWeight': 'bold'}),
-                        html.P(f"{delta_t:.3f}s", style=status_style)
-                    ], style={'display': 'inline-block', 'marginRight': '20px'}),
-                    html.Div([
-                        html.P("MT:", style={'fontWeight': 'bold'}),
-                        html.P(f"{mt:.3f}s", style=status_style)
-                    ], style={'display': 'inline-block', 'marginRight': '20px'}),
-                    html.Div([
-                        html.P("Curvas TCC:", style={'fontWeight': 'bold'}),
-                        html.P("No se cruzan" if curves_valid else "Se cruzan", style=status_style)
-                    ], style={'display': 'inline-block'})
-                ], style={'marginBottom': '15px'}),
-                html.H5("Estado: " + ("COORDINADO" if is_coordinated else "DESCOORDINADO"), 
-                        style={**status_style, 'marginTop': '10px'})
-            ])
-            
-            # Actualizar tabla de datos
-            uncoordinated_table_data = [
-                {"parameter": "Falla (%)", "value": pair.get('fault', 'N/A')},
-                {"parameter": "Línea Principal", "value": main_relay.get('line', 'N/A')},
-                {"parameter": "Relé Principal", "value": main_relay.get('relay', 'N/A')},
-                {"parameter": "TDS (Main)", "value": f"{main_relay.get('TDS', 0):.5f}"},
-                {"parameter": "Pickup (Main)", "value": f"{main_relay.get('pick_up', 0):.5f}"},
-                {"parameter": "I_shc (Main)", "value": f"{main_relay.get('Ishc', 0):.3f}"},
-                {"parameter": "t_m (Main)", "value": f"{main_relay.get('Time_out', 0):.3f}"},
-                {"parameter": "Línea Backup", "value": backup_relay.get('line', 'N/A')},
-                {"parameter": "Relé Backup", "value": backup_relay.get('relay', 'N/A')},
-                {"parameter": "TDS (Backup)", "value": f"{backup_relay.get('TDS', 0):.5f}"},
-                {"parameter": "Pickup (Backup)", "value": f"{backup_relay.get('pick_up', 0):.5f}"},
-                {"parameter": "I_shc (Backup)", "value": f"{backup_relay.get('Ishc', 0):.3f}"},
-                {"parameter": "t_b (Backup)", "value": f"{backup_relay.get('Time_out', 0):.3f}"},
-                {"parameter": "Δt", "value": f"{delta_t:.3f}"},
-                {"parameter": "MT", "value": f"{mt:.3f}"}
-            ]
 
-        # Generar gráficas de analítica automáticamente
+        # Generar gráficas de analítica
         # 1. Gráfica de Análisis de Coordinación
-        coordination_fig = go.Figure()
         delta_t_values = [p.get('delta_t', 0) for p in all_pairs]
-        coordination_fig.add_trace(go.Histogram(
+        coordination_fig = go.Figure(data=go.Histogram(
             y=delta_t_values,
             name='Distribución Δt',
             marker_color='#3498db',
@@ -900,7 +1031,6 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
 
         # 3. Análisis de Sensibilidad
         sensitivity_fig = go.Figure()
-        # Ishc vs Delta_t
         sensitivity_fig.add_trace(go.Scatter(
             x=[p.get('main_relay', {}).get('Ishc', 0) for p in all_pairs],
             y=[p.get('delta_t', 0) for p in all_pairs],
@@ -933,7 +1063,7 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             if backup_line not in line_data:
                 line_data[backup_line] = {'coordinated': 0, 'uncoordinated': 0}
             
-            if pair.get('delta_t', 0) >= 0:
+            if pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0:
                 line_data[main_line]['coordinated'] += 1
                 line_data[backup_line]['coordinated'] += 1
             else:
@@ -967,7 +1097,7 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             if backup_relay not in relay_data:
                 relay_data[backup_relay] = {'coordinated': 0, 'uncoordinated': 0}
             
-            if pair.get('delta_t', 0) >= 0:
+            if pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0:
                 relay_data[main_relay]['coordinated'] += 1
                 relay_data[backup_relay]['coordinated'] += 1
             else:
@@ -998,7 +1128,7 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             if fault not in fault_data:
                 fault_data[fault] = {'coordinated': 0, 'uncoordinated': 0}
             
-            if pair.get('delta_t', 0) >= 0:
+            if pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0:
                 fault_data[fault]['coordinated'] += 1
             else:
                 fault_data[fault]['uncoordinated'] += 1
@@ -1022,7 +1152,6 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
 
         # 7. Gráfica de Ajustes de Relés
         relay_settings_fig = go.Figure()
-        # Ishc vs Time para relés principales
         relay_settings_fig.add_trace(go.Scatter(
             x=[p.get('main_relay', {}).get('Ishc', 0) for p in all_pairs],
             y=[p.get('main_relay', {}).get('Time_out', 0) for p in all_pairs],
@@ -1030,7 +1159,6 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
             name='Relés Principales',
             marker=dict(color='#3498db')
         ))
-        # Ishc vs Time para relés de respaldo
         relay_settings_fig.add_trace(go.Scatter(
             x=[p.get('backup_relay', {}).get('Ishc', 0) for p in all_pairs],
             y=[p.get('backup_relay', {}).get('Time_out', 0) for p in all_pairs],
@@ -1071,6 +1199,19 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
                 'razon_descoordinacion': pair.get('razon_descoordinacion', 'N/A')
             })
 
+        # 9. Conclusiones
+        conclusions = html.Div([
+            html.H4("Conclusiones del Análisis", style={'marginBottom': '20px'}),
+            html.Div([
+                html.P(f"Total de pares analizados: {len(all_pairs)}"),
+                html.P(f"Pares coordinados: {len(coordinated_pairs)} ({len(coordinated_pairs)/len(all_pairs)*100:.1f}%)"),
+                html.P(f"Pares descoordinados: {len(uncoordinated_pairs)} ({len(uncoordinated_pairs)/len(all_pairs)*100:.1f}%)"),
+                html.P(f"TMT total: {tmt_total_scenario:.3f}s"),
+                html.P(f"TMT promedio por par descoordinado: {tmt_promedio}"),
+                html.P(f"Desviación estándar del TMT: {tmt_std}")
+            ], style={'backgroundColor': '#f8f9fa', 'padding': '20px', 'borderRadius': '10px'})
+        ])
+
     except Exception as e:
         print(f"Error en el procesamiento de datos: {e}")
         traceback.print_exc()
@@ -1087,15 +1228,18 @@ def update_analytics(coordinated_idx, uncoordinated_idx):
      Output('backup-tds-slider', 'value'),
      Output('backup-pickup-slider', 'value'),
      Output('uncoordinated-graph', 'figure', allow_duplicate=True),
-     Output('coordination-status', 'children', allow_duplicate=True)],
+     Output('coordination-status', 'children', allow_duplicate=True),
+     Output('uncoordinated-pair-table', 'data', allow_duplicate=True)],
     [Input('uncoordinated-dropdown', 'value'),
      Input('main-tds-slider', 'value'),
      Input('main-pickup-slider', 'value'),
      Input('backup-tds-slider', 'value'),
-     Input('backup-pickup-slider', 'value')],
-    prevent_initial_call='initial_duplicate'
+     Input('backup-pickup-slider', 'value'),
+     Input('save-adjustments-button', 'n_clicks')],
+    [State('uncoordinated-dropdown', 'value')],
+    prevent_initial_call=True
 )
-def update_coordination_interface(uncoordinated_idx, main_tds, main_pickup, backup_tds, backup_pickup):
+def update_coordination_interface(uncoordinated_idx, main_tds, main_pickup, backup_tds, backup_pickup, n_clicks, dropdown_value):
     # Obtener el contexto del callback para determinar qué input disparó la actualización
     ctx = callback_context
     trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
@@ -1103,7 +1247,7 @@ def update_coordination_interface(uncoordinated_idx, main_tds, main_pickup, back
     # Si el trigger es el dropdown, actualizar los valores de los sliders
     if trigger_id == 'uncoordinated-dropdown':
         if uncoordinated_idx is None or uncoordinated_idx >= len(uncoordinated_pairs):
-            return 0.14, 1.0, 0.14, 1.0, go.Figure(), "Selecciona un par descoordinado"
+            return 0.14, 1.0, 0.14, 1.0, go.Figure(), "Selecciona un par descoordinado", []
         
         pair = uncoordinated_pairs[uncoordinated_idx]
         main_relay = pair.get('main_relay', {})
@@ -1116,123 +1260,244 @@ def update_coordination_interface(uncoordinated_idx, main_tds, main_pickup, back
             backup_relay.get('TDS', 0.14),
             backup_relay.get('pick_up', 1.0),
             go.Figure(),  # Figura vacía inicial
-            "Selecciona un par descoordinado"  # Estado inicial
+            "Selecciona un par descoordinado",  # Estado inicial
+            []  # Tabla vacía inicial
         )
     
-    # Si el trigger es cualquiera de los sliders, actualizar la gráfica y el estado
+    # Si no hay un par seleccionado, no hacer nada
     if uncoordinated_idx is None or uncoordinated_idx >= len(uncoordinated_pairs):
-        return dash.no_update, dash.no_update, dash.no_update, dash.no_update, go.Figure(), "Selecciona un par descoordinado"
+        raise dash.exceptions.PreventUpdate
     
-    pair = uncoordinated_pairs[uncoordinated_idx]
-    main_relay = pair.get('main_relay', {})
-    backup_relay = pair.get('backup_relay', {})
-    
-    # Usar valores de los sliders
-    main_tds = main_tds or main_relay.get('TDS', 0)
-    main_pickup = main_pickup or main_relay.get('pick_up', 0)
-    backup_tds = backup_tds or backup_relay.get('TDS', 0)
-    backup_pickup = backup_pickup or backup_relay.get('pick_up', 0)
-    
-    # Crear rango de corrientes para las curvas
-    min_pickup = min(main_pickup, backup_pickup)
-    max_ishc = max(main_relay.get('Ishc', 0), backup_relay.get('Ishc', 0))
-    i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER),
-                         np.log10(max_ishc * MAX_CURRENT_MULTIPLIER),
-                         num=100)
-    
-    # Calcular curvas con nuevos valores
-    main_times = calculate_inverse_time_curve(main_tds, main_pickup, i_range)
-    backup_times = calculate_inverse_time_curve(backup_tds, backup_pickup, i_range)
-    
-    # Crear gráfica
-    fig = go.Figure()
-    
-    # Agregar curvas
-    fig.add_trace(go.Scatter(y=main_times, x=i_range, name='Main',
-                            mode='lines', line=dict(color='#3498db'),
-                            hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A'))
-    fig.add_trace(go.Scatter(y=backup_times, x=i_range, name='Backup',
-                            mode='lines', line=dict(color='#e74c3c'),
-                            hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A'))
-    
-    # Agregar puntos de operación
-    fig.add_trace(go.Scatter(y=[main_relay.get('Time_out', 0)],
-                            x=[main_relay.get('Ishc', 0)],
-                            name='Main Op. Point', mode='markers',
-                            marker=dict(size=12, color='#3498db', symbol='star'),
-                            hovertemplate='t_m: %{y:.3f}s<br>I_m: %{x:.1f}A'))
-    fig.add_trace(go.Scatter(y=[backup_relay.get('Time_out', 0)],
-                            x=[backup_relay.get('Ishc', 0)],
-                            name='Backup Op. Point', mode='markers',
-                            marker=dict(size=12, color='#e74c3c', symbol='star'),
-                            hovertemplate='t_b: %{y:.3f}s<br>I_b: %{x:.1f}A'))
-    
-    # Calcular nuevo delta_t y mt
-    delta_t = backup_relay.get('Time_out', 0) - main_relay.get('Time_out', 0) - CTI
-    mt = (delta_t - abs(delta_t)) / 2
-    
-    # Validar coordinación
-    curves_valid = validate_tcc_curves(main_tds, main_pickup, backup_tds, backup_pickup)
-    is_coordinated = delta_t > CTI and mt == 0 and curves_valid
-    
-    # Actualizar layout
-    fig.update_layout(
-        title=f'Par Descoordinado (Δt = {delta_t:.3f}s)',
-        yaxis_title='Tiempo de operación (s)',
-        xaxis_title='Corriente (A)',
-        xaxis_type='log',
-        yaxis_type='log',
-        showlegend=True,
-        plot_bgcolor='white',
-        paper_bgcolor='white',
-        xaxis=dict(
-            gridcolor='lightgray',
-            showgrid=True,
-            zeroline=True,
-            zerolinecolor='black',
-            zerolinewidth=1
-        ),
-        yaxis=dict(
-            gridcolor='lightgray',
-            showgrid=True,
-            zeroline=True,
-            zerolinecolor='black',
-            zerolinewidth=1
+    try:
+        pair = uncoordinated_pairs[uncoordinated_idx]
+        main_relay = pair.get('main_relay', {})
+        backup_relay = pair.get('backup_relay', {})
+        
+        # Usar valores de los sliders
+        main_tds = main_tds or main_relay.get('TDS', 0)
+        main_pickup = main_pickup or main_relay.get('pick_up', 0)
+        backup_tds = backup_tds or backup_relay.get('TDS', 0)
+        backup_pickup = backup_pickup or backup_relay.get('pick_up', 0)
+        
+        # Crear rango de corrientes para las curvas
+        min_pickup = min(main_pickup, backup_pickup)
+        max_ishc = max(main_relay.get('Ishc', 0), backup_relay.get('Ishc', 0))
+        i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER),
+                             np.log10(max_ishc * MAX_CURRENT_MULTIPLIER),
+                             num=100)
+        
+        # Calcular curvas con nuevos valores
+        main_times = calculate_inverse_time_curve(main_tds, main_pickup, i_range)
+        backup_times = calculate_inverse_time_curve(backup_tds, backup_pickup, i_range)
+        
+        # Calcular nuevos tiempos de operación para las corrientes de falla
+        main_ishc = main_relay.get('Ishc', 0)
+        backup_ishc = backup_relay.get('Ishc', 0)
+        
+        if main_ishc <= main_pickup:
+            coordination_state = "ERROR: I_shc ≤ Pickup (Main)"
+            status_color = '#e74c3c'
+            delta_t = np.nan
+            mt = np.nan
+            main_time_out = np.inf
+        else:
+            main_time_out = calculate_inverse_time_curve(main_tds, main_pickup, np.array([main_ishc]))[0]
+            
+        if backup_ishc <= backup_pickup:
+            coordination_state = "ERROR: I_shc ≤ Pickup (Backup)"
+            status_color = '#e74c3c'
+            delta_t = np.nan
+            mt = np.nan
+            backup_time_out = np.inf
+        else:
+            backup_time_out = calculate_inverse_time_curve(backup_tds, backup_pickup, np.array([backup_ishc]))[0]
+
+        # Si ambos tiempos son válidos, calcular delta_t y mt
+        if not np.isinf(main_time_out) and not np.isinf(backup_time_out):
+            delta_t = backup_time_out - main_time_out - CTI
+            mt = (delta_t - abs(delta_t)) / 2
+            
+            # Validar coordinación
+            curves_valid, crossing_point = validate_tcc_curves(main_tds, main_pickup, backup_tds, backup_pickup)
+            
+            # Determinar el estado de coordinación
+            if delta_t > CTI and mt == 0 and curves_valid:
+                coordination_state = "COORDINADO"
+                status_color = '#27ae60'  # Verde para coordinado
+            elif abs(delta_t - CTI) < 1e-6:  # Usar una pequeña tolerancia para comparación de floats
+                coordination_state = "COORDINACIÓN CRÍTICA"
+                status_color = '#f39c12'  # Naranja para crítico
+            else:
+                coordination_state = "DESCOORDINADO"
+                status_color = '#e74c3c'  # Rojo para descoordinado
+
+        # Crear mensaje de estado con mejor formato y detalle del cálculo
+        status_style = {'color': status_color}
+        status_text = html.Div([
+            html.H4("Estado de Coordinación", style={**status_style, 'marginBottom': '15px'}),
+            html.Div([
+                html.Div([
+                    html.P("Corrientes de Falla:", style={'fontWeight': 'bold'}),
+                    html.P(f"Main: {main_ishc:.3f}A (Pickup: {main_pickup:.3f}A)", 
+                          style={'color': '#e74c3c' if main_ishc <= main_pickup else '#27ae60'}),
+                    html.P(f"Backup: {backup_ishc:.3f}A (Pickup: {backup_pickup:.3f}A)",
+                          style={'color': '#e74c3c' if backup_ishc <= backup_pickup else '#27ae60'})
+                ], style={'display': 'block', 'marginBottom': '10px'}),
+                html.Div([
+                    html.P("Δt = t_b - t_m - CTI:", style={'fontWeight': 'bold'}),
+                    html.P(f"{backup_time_out:.3f}s - {main_time_out:.3f}s - {CTI}s = {delta_t:.3f}s" 
+                          if not np.isnan(delta_t) else "No se puede calcular (I_shc ≤ Pickup)",
+                          style=status_style)
+                ], style={'display': 'block', 'marginBottom': '10px'}),
+                html.Div([
+                    html.P("MT:", style={'fontWeight': 'bold'}),
+                    html.P(f"{mt:.3f}s" if not np.isnan(mt) else "N/A", style=status_style)
+                ], style={'display': 'inline-block', 'marginRight': '20px'}),
+                html.Div([
+                    html.P("Curvas TCC:", style={'fontWeight': 'bold'}),
+                    html.P("No se cruzan" if curves_valid else "Se cruzan", style=status_style)
+                ], style={'display': 'inline-block'})
+            ], style={'marginBottom': '15px'}),
+            html.H5(f"Estado: {coordination_state}", 
+                    style={**status_style, 'marginTop': '10px'}),
+            html.Div([
+                html.P("Criterios de Coordinación:", style={'fontWeight': 'bold', 'marginTop': '15px'}),
+                html.Ul([
+                    html.Li(f"Δt > CTI ({CTI}s): {'✓' if delta_t > CTI else '✗'} ({delta_t:.3f}s)" 
+                          if not np.isnan(delta_t) else f"Δt > CTI ({CTI}s): ✗ (No se puede calcular)"),
+                    html.Li(f"MT = 0: {'✓' if mt == 0 else '✗'} ({mt:.3f}s)" 
+                          if not np.isnan(mt) else "MT = 0: ✗ (No se puede calcular)"),
+                    html.Li(f"Curvas TCC sin cruce: {'✓' if curves_valid else '✗'}")
+                ], style={'listStyleType': 'none', 'padding': '0'})
+            ])
+        ])
+        
+        # Si hay punto de cruce, agregar información detallada
+        if crossing_point:
+            current_cross, time_cross = crossing_point
+            status_text.children.append(html.Div([
+                html.H5("Detalles del Punto de Cruce:", style={'marginTop': '20px'}),
+                html.P(f"Corriente: {current_cross:.3f}A"),
+                html.P(f"Tiempo: {time_cross:.3f}s"),
+                html.P(f"Pickup principal: {main_pickup:.3f}A"),
+                html.P(f"Pickup backup: {backup_pickup:.3f}A")
+            ], style={'backgroundColor': '#f8f9fa', 'padding': '15px', 'borderRadius': '5px', 'marginTop': '15px'}))
+        
+        # Actualizar tabla de datos con los nuevos tiempos calculados y el detalle del delta_t
+        table_data = [
+            {"parameter": "Falla (%)", "value": pair.get('fault', 'N/A')},
+            {"parameter": "Línea Principal", "value": main_relay.get('line', 'N/A')},
+            {"parameter": "Relé Principal", "value": main_relay.get('relay', 'N/A')},
+            {"parameter": "TDS (Main)", "value": f"{main_tds:.5f}"},
+            {"parameter": "Pickup (Main)", "value": f"{main_pickup:.5f}"},
+            {"parameter": "I_shc (Main)", "value": f"{main_ishc:.3f}"},
+            {"parameter": "t_m (Main)", "value": f"{main_time_out:.3f}" if not np.isinf(main_time_out) else "∞"},
+            {"parameter": "Línea Backup", "value": backup_relay.get('line', 'N/A')},
+            {"parameter": "Relé Backup", "value": backup_relay.get('relay', 'N/A')},
+            {"parameter": "TDS (Backup)", "value": f"{backup_tds:.5f}"},
+            {"parameter": "Pickup (Backup)", "value": f"{backup_pickup:.5f}"},
+            {"parameter": "I_shc (Backup)", "value": f"{backup_ishc:.3f}"},
+            {"parameter": "t_b (Backup)", "value": f"{backup_time_out:.3f}" if not np.isinf(backup_time_out) else "∞"},
+            {"parameter": "CTI", "value": f"{CTI}"},
+            {"parameter": "Δt = t_b - t_m - CTI", "value": f"{delta_t:.3f}" if not np.isnan(delta_t) else "N/A"},
+            {"parameter": "MT", "value": f"{mt:.3f}" if not np.isnan(mt) else "N/A"},
+            {"parameter": "Estado", "value": coordination_state}
+        ]
+        
+        # Crear la figura con las curvas TCC
+        fig = go.Figure()
+        
+        # Crear rango de corrientes para las curvas
+        min_pickup = min(main_pickup, backup_pickup)
+        max_ishc = max(main_relay.get('Ishc', 0), backup_relay.get('Ishc', 0))
+        i_range = np.logspace(np.log10(min_pickup * MIN_CURRENT_MULTIPLIER),
+                             np.log10(max_ishc * MAX_CURRENT_MULTIPLIER),
+                             num=100)
+        
+        # Calcular curvas con nuevos valores
+        main_times = calculate_inverse_time_curve(main_tds, main_pickup, i_range)
+        backup_times = calculate_inverse_time_curve(backup_tds, backup_pickup, i_range)
+        
+        # Agregar curvas
+        fig.add_trace(
+            go.Scatter(y=main_times, x=i_range, name='Main',
+                      mode='lines', line=dict(color='#3498db'),
+                      hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A')
         )
-    )
+        fig.add_trace(
+            go.Scatter(y=backup_times, x=i_range, name='Backup',
+                      mode='lines', line=dict(color='#e74c3c'),
+                      hovertemplate='t: %{y:.3f}s<br>I: %{x:.1f}A')
+        )
+        
+        # Agregar puntos de operación si los tiempos son válidos
+        if not np.isinf(main_time_out):
+            fig.add_trace(
+                go.Scatter(y=[main_time_out],
+                          x=[main_ishc],
+                          name='Main Op. Point', mode='markers',
+                          marker=dict(size=12, color='#3498db', symbol='star'),
+                          hovertemplate='t_m: %{y:.3f}s<br>I_m: %{x:.1f}A')
+            )
+        
+        if not np.isinf(backup_time_out):
+            fig.add_trace(
+                go.Scatter(y=[backup_time_out],
+                          x=[backup_ishc],
+                          name='Backup Op. Point', mode='markers',
+                          marker=dict(size=12, color='#e74c3c', symbol='star'),
+                          hovertemplate='t_b: %{y:.3f}s<br>I_b: %{x:.1f}A')
+            )
+        
+        # Agregar punto de cruce si existe
+        if crossing_point:
+            fig.add_trace(
+                go.Scatter(y=[crossing_point[1]],
+                          x=[crossing_point[0]],
+                          name='Punto de Cruce',
+                          mode='markers',
+                          marker=dict(size=12, color='#f1c40f', symbol='diamond'),
+                          hovertemplate='Punto de cruce<br>t: %{y:.3f}s<br>I: %{x:.1f}A')
+            )
+        
+        # Actualizar layout
+        fig.update_layout(
+            title=f'Par {coordination_state} (Δt = {delta_t:.3f}s)' if not np.isnan(delta_t) else f'Par {coordination_state}',
+            yaxis_title='Tiempo de operación (s)',
+            xaxis_title='Corriente (A)',
+            xaxis_type='log',
+            yaxis_type='log',
+            showlegend=True,
+            plot_bgcolor='white',
+            paper_bgcolor='white',
+            xaxis=dict(
+                gridcolor='lightgray',
+                showgrid=True,
+                zeroline=True,
+                zerolinecolor='black',
+                zerolinewidth=1
+            ),
+            yaxis=dict(
+                gridcolor='lightgray',
+                showgrid=True,
+                zeroline=True,
+                zerolinecolor='black',
+                zerolinewidth=1
+            )
+        )
+
+        return main_tds, main_pickup, backup_tds, backup_pickup, fig, status_text, table_data
     
-    # Crear mensaje de estado con mejor formato
-    status_style = {'color': '#27ae60' if is_coordinated else '#e74c3c'}
-    status_text = html.Div([
-        html.H4("Estado de Coordinación", style={**status_style, 'marginBottom': '15px'}),
-        html.Div([
-            html.Div([
-                html.P("Δt:", style={'fontWeight': 'bold'}),
-                html.P(f"{delta_t:.3f}s", style=status_style)
-            ], style={'display': 'inline-block', 'marginRight': '20px'}),
-            html.Div([
-                html.P("MT:", style={'fontWeight': 'bold'}),
-                html.P(f"{mt:.3f}s", style=status_style)
-            ], style={'display': 'inline-block', 'marginRight': '20px'}),
-            html.Div([
-                html.P("Curvas TCC:", style={'fontWeight': 'bold'}),
-                html.P("No se cruzan" if curves_valid else "Se cruzan", style=status_style)
-            ], style={'display': 'inline-block'})
-        ], style={'marginBottom': '15px'}),
-        html.H5("Estado: " + ("COORDINADO" if is_coordinated else "DESCOORDINADO"), 
-                style={**status_style, 'marginTop': '10px'})
-    ])
-    
-    # Retornar valores actualizados de los sliders y la gráfica
-    return dash.no_update, dash.no_update, dash.no_update, dash.no_update, fig, status_text
+    except Exception as e:
+        print(f"Error en update_coordination_interface: {e}")
+        traceback.print_exc()
+        raise dash.exceptions.PreventUpdate
 
 # --- Fase 5: Ejecutar la Aplicación ---
 if __name__ == '__main__':
     print("\nIniciando servidor Dash...")
     print(f"Accede a la aplicación en: http://127.0.0.1:8050/")
-    # --- Exportar informe estadístico de pares de relés (solo CSV) ---
-    import datetime
-
+    
     # Construir DataFrame con todos los pares
     reporte_data = []
     for pair in all_pairs:
@@ -1256,22 +1521,21 @@ if __name__ == '__main__':
             'MT': pair.get('mt', 'N/A'),
             'Estado': 'Coordinado' if (pair.get('delta_t', 0) > CTI and pair.get('mt', 0) == 0 and 
                                      validate_tcc_curves(main.get('TDS', 0), main.get('pick_up', 0),
-                                                       backup.get('TDS', 0), backup.get('pick_up', 0))) 
+                                                       backup.get('TDS', 0), backup.get('pick_up', 0))[0]) 
                      else 'Descoordinado',
             'Razón Descoordinación': pair.get('razon_descoordinacion', 'N/A')
         })
 
     reporte_df = pd.DataFrame(reporte_data)
 
-    # Crear nombre de archivo con fecha y hora para evitar sobrescribir
-    fecha = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    csv_path = f"data/processed/reporte_estadistico_reles_{fecha}.csv"
+    # Usar un nombre de archivo fijo
+    csv_path = "data/processed/reporte_estadistico_reles.csv"
 
-    # Guardar como CSV
+    # Guardar como CSV (sobrescribiendo el archivo existente)
     reporte_df.to_csv(csv_path, index=False)
 
     print(f"\nInforme estadístico exportado a: {csv_path}\n")
-    app.run_server(debug=True)  # debug=True para desarrollo 
+    app.run_server(debug=True)  # debug=True para desarrollo
 
 # Agregar estilos CSS
 app.index_string = '''
